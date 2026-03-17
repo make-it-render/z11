@@ -5,7 +5,7 @@
 /// Use with any Request struct from proto namespace that does not need extra data.
 pub fn send(conn: std.net.Stream, request: anytype) !void {
     const req_bytes: []const u8 = &std.mem.toBytes(request);
-    log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
+    //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
     _ = try std.posix.send(conn.handle, req_bytes, 0);
 }
 
@@ -14,7 +14,7 @@ pub fn send(conn: std.net.Stream, request: anytype) !void {
 /// Use with Request structs from proto namespace that require additional data to be sent.
 pub fn sendWithBytes(conn: std.net.Stream, request: anytype, extra_bytes: []const u8) !void {
     const req_bytes = request_bytes_fixed_len(request, extra_bytes.len);
-    log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
+    //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
 
     const pad_len = get_pad_len(extra_bytes.len);
     const padding: [3]u8 = .{ 0, 0, 0 };
@@ -30,7 +30,7 @@ pub fn sendWithBytes(conn: std.net.Stream, request: anytype, extra_bytes: []cons
 /// Use with Request structs from proto namespace that require additional data to be sent.
 pub fn write(writer: *std.Io.Writer, request: anytype) !void {
     const req_bytes: []const u8 = &std.mem.toBytes(request);
-    log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
+    //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
     try writer.writeAll(req_bytes);
 }
 
@@ -64,8 +64,8 @@ fn request_bytes_fixed_len(request: anytype, bytes_len: usize) [@sizeOf(@TypeOf(
     req_bytes[2] = len_bytes[0];
     req_bytes[3] = len_bytes[1];
 
-    log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
-    log.debug("Sending extra bytes len  {d}", .{bytes_len});
+    //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
+    //log.debug("Sending extra bytes len  {d}", .{bytes_len});
 
     return req_bytes;
 }
@@ -149,7 +149,7 @@ pub fn read(reader: *std.Io.Reader) !?Message {
         if (message_code == tag.value) { // The tag value is the same as the received message
             // Return the struct from the bytes and build the union.
             const message = try message_reader.readStruct(@field(proto, tag.name));
-            log.debug("Received message ({any}): {any}", .{ sent_event, message });
+            //log.debug("Received message ({any}): {any}", .{ sent_event, message });
             return @unionInit(Message, tag.name, message);
         }
     }
