@@ -1,10 +1,8 @@
-# mir-x11
+# z11
 
 Low-level X11 protocol client library for Zig.
 
 Communicates directly with the X server via Unix socket -- no dependency on libX11 or libxcb. Provides typed protocol structs that map directly to the X11 wire format, so you can send requests and receive events without any C bindings.
-
-> Most users should prefer [mir-anywindow](../mir-anywindow) for cross-platform window management. Use mir-x11 directly only when you need low-level X11 protocol access.
 
 ## Features
 
@@ -21,7 +19,7 @@ Communicates directly with the X server via Unix socket -- no dependency on libX
 ### Install
 
 ```sh
-zig fetch --save git+https://github.com/make-it-render/mir-x11
+zig fetch --save git+https://github.com/make-it-render/z11
 ```
 
 ### build.zig
