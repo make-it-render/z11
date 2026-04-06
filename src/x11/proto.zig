@@ -583,7 +583,7 @@ pub const WindowMask = enum(u32) {
     EventMask = 2048,
     DoNotPropagateMask = 4096,
     Colormap = 8192,
-    Cursor = 16348,
+    Cursor = 16384,
 };
 
 pub const WindowValue = struct {
@@ -1052,6 +1052,90 @@ pub const PutImage = extern struct {
     left_pad: u8 = 0,
     depth: u8,
     pad: [2]u8 = .{ 0, 0 },
+};
+
+/// GrabPointer (opcode 26)
+pub const GrabPointer = extern struct {
+    opcode: u8 = 26,
+    owner_events: u8 = 1,
+    length: u16 = 6,
+    grab_window: u32,
+    event_mask: u16 = 0,
+    pointer_mode: u8 = 1,
+    keyboard_mode: u8 = 1,
+    confine_to: u32 = 0,
+    cursor: u32 = 0,
+    timestamp: u32 = 0,
+};
+
+/// UngrabPointer (opcode 27)
+pub const UngrabPointer = extern struct {
+    opcode: u8 = 27,
+    unused: u8 = 0,
+    length: u16 = 2,
+    timestamp: u32 = 0,
+};
+
+/// OpenFont (opcode 45)
+pub const OpenFont = extern struct {
+    opcode: u8 = 45,
+    unused: u8 = 0,
+    length: u16,
+    font_id: u32,
+    name_length: u16,
+    unused2: u16 = 0,
+};
+
+/// CloseFont (opcode 46)
+pub const CloseFont = extern struct {
+    opcode: u8 = 46,
+    unused: u8 = 0,
+    length: u16 = 2,
+    font_id: u32,
+};
+
+/// CreateCursor (opcode 93)
+pub const CreateCursor = extern struct {
+    opcode: u8 = 93,
+    unused: u8 = 0,
+    length: u16 = 8,
+    cursor_id: u32,
+    source_pixmap: u32,
+    mask_pixmap: u32,
+    fore_red: u16,
+    fore_green: u16,
+    fore_blue: u16,
+    back_red: u16,
+    back_green: u16,
+    back_blue: u16,
+    x_hotspot: u16,
+    y_hotspot: u16,
+};
+
+/// CreateGlyphCursor (opcode 94)
+pub const CreateGlyphCursor = extern struct {
+    opcode: u8 = 94,
+    unused: u8 = 0,
+    length: u16 = 8,
+    cursor_id: u32,
+    source_font: u32,
+    mask_font: u32,
+    source_char: u16,
+    mask_char: u16,
+    fore_red: u16,
+    fore_green: u16,
+    fore_blue: u16,
+    back_red: u16,
+    back_green: u16,
+    back_blue: u16,
+};
+
+/// FreeCursor (opcode 95)
+pub const FreeCursor = extern struct {
+    opcode: u8 = 95,
+    unused: u8 = 0,
+    length: u16 = 2,
+    cursor_id: u32,
 };
 
 pub const GetKeyboardMapping = extern struct {
