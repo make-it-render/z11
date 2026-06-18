@@ -3,21 +3,21 @@
 const std = @import("std");
 const x11 = @import("x11");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
 
     // === Setup === //
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer std.debug.assert(gpa.deinit() != .leak);
-    const allocator = gpa.allocator();
+    const allocator = init.gpa;
+    const io = init.io;
+    const environ = init.minimal.environ;
 
     // This will stabilish a connection to X11 server
-    const conn = try x11.connect(.{});
-    defer conn.close();
+    const conn = try x11.connect(io, environ, .{});
+    defer conn.close(io);
 
     // Setup will return all informationa about displays, colormode, the root window and others
     // This must be the first function called after connecting
-    const info = try x11.setup(allocator, conn);
+    const info = try x11.setup(io, environ, allocator, conn);
     defer info.deinit();
 
     // Every "object" we create we need to assign an ID
@@ -36,16 +36,16 @@ pub fn main() !void {
     try x11.sendWithBytes(conn, intern_wm_protocols, "WM_PROTOCOLS");
 
     // InternAtom generated a reply, here we read it
-    const wm_protocols = try x11.receiveReply(conn, x11.proto.InternAtomReply);
+    const wm_protocols = try x11.receiveReply(io, conn, x11.proto.InternAtomReply);
     if (wm_protocols == null) {
         return error.NoWMProtocols;
     }
 
     // There is a utility function to make it easier to intern atoms
-    const string_atom = try x11.internAtom(conn, "STRING");
-    const atom_atom = try x11.internAtom(conn, "ATOM");
-    const wm_name_atom = try x11.internAtom(conn, "WM_NAME"); // Used for the window title
-    const wm_delete_window_atom = try x11.internAtom(conn, "WM_DELETE_WINDOW"); // Used to get notification of window closing
+    const string_atom = try x11.internAtom(io, conn, "STRING");
+    const atom_atom = try x11.internAtom(io, conn, "ATOM");
+    const wm_name_atom = try x11.internAtom(io, conn, "WM_NAME"); // Used for the window title
+    const wm_delete_window_atom = try x11.internAtom(io, conn, "WM_DELETE_WINDOW"); // Used to get notification of window closing
 
     // === Creating an Window === //
 
@@ -176,23 +176,23 @@ pub fn main() !void {
     //try x11.sendWithBytes(conn, put_image_req, yellow_block_zpixmap);
 
     var net_writer_buffer: [64]u8 = undefined;
-    var net_writer = conn.writer(&net_writer_buffer);
+    var net_writer = conn.writer(io, &net_writer_buffer);
     var writer = &net_writer.interface;
     try x11.stream(writer, put_image_req, (&pixmap_reader).interface(), pixels.len);
     try writer.flush();
 
     // === Main loop === //
 
-    var timer = try std.time.Timer.start();
+    var draw_start = std.Io.Clock.now(.awake, io);
 
     // Now we have the main loop
     // Here we receive events and send draw requests
     var open = true;
     while (open) {
-        while (try x11.receive(conn)) |message| {
+        while (try x11.receive(io, conn)) |message| {
             switch (message) {
                 .Expose => {
-                    timer.reset();
+                    draw_start = std.Io.Clock.now(.awake, io);
                     // Expose means we need to draw to the window
                     // It also include the area we need to draw to
 
@@ -217,7 +217,9 @@ pub fn main() !void {
                     };
                     try x11.send(conn, copy_area_req);
 
-                    log.debug("Time to draw: {d}ms", .{timer.lap() / std.time.ns_per_ms});
+                    const draw_end = std.Io.Clock.now(.awake, io);
+                    const elapsed_ms: i64 = @intCast(@divTrunc(draw_start.durationTo(draw_end).nanoseconds, std.time.ns_per_ms));
+                    log.debug("Time to draw: {d}ms", .{elapsed_ms});
                 },
                 .ClientMessage => |client_message| {
                     // ClientMessage is how other X11 clients communicate

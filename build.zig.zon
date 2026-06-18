@@ -2,6 +2,7 @@
     .name = .z11,
     .fingerprint = 0x31a4331c04ad2cca,
     .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{ "src", "build.zig", "build.zig.zon" },
     .dependencies = .{},
 }

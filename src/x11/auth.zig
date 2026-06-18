@@ -7,15 +7,15 @@ const log = std.log.scoped(.x11);
 
 /// Looks for the Xauthority file and open it.
 /// Calee should close it after use.
-fn open_xauth_file() !std.fs.File {
-    if (std.posix.getenv("XAUTHORITY")) |file| {
+fn open_xauth_file(io: std.Io, environ: std.process.Environ) !std.Io.File {
+    if (environ.getPosix("XAUTHORITY")) |file| {
         log.debug("Xauthority file: {s}", .{file});
-        return std.fs.openFileAbsolute(file, .{});
-    } else if (std.posix.getenv("HOME")) |home| {
-        var dir = try std.fs.openDirAbsolute(home, .{});
-        defer dir.close();
+        return std.Io.Dir.openFileAbsolute(io, file, .{});
+    } else if (environ.getPosix("HOME")) |home| {
+        var dir = try std.Io.Dir.openDirAbsolute(io, home, .{});
+        defer dir.close(io);
         log.debug("Xauthority file: {s}/.Xauthority", .{home});
-        return dir.openFile(".Xauthority", .{});
+        return dir.openFile(io, ".Xauthority", .{});
     } else {
         return error.NoAuthorityFileFound;
     }
@@ -24,10 +24,10 @@ fn open_xauth_file() !std.fs.File {
 /// Reads the authority file.
 /// Only supports MIT-MAGIC-COOKIE method.
 /// Ignore address and port, only support local method.
-fn read_xauth_file(allocator: std.mem.Allocator, xauth_file: std.fs.File) !XAuth {
+fn read_xauth_file(io: std.Io, allocator: std.mem.Allocator, xauth_file: std.Io.File) !XAuth {
     var buffer: [1024]u8 = undefined;
 
-    var xauth_file_reader = xauth_file.reader(&buffer);
+    var xauth_file_reader = xauth_file.reader(io, &buffer);
     const xauth_reader = &xauth_file_reader.interface;
 
     while (true) {
@@ -92,9 +92,9 @@ pub const XAuth = struct {
 /// Return authentication information.
 /// It will look at XAUTHORITY env var for location of Xauthority file, next it will look for it at HOME.
 /// It returns an XAuth struct that needs to be deinit'd after use.
-pub fn get_auth(allocator: std.mem.Allocator) !XAuth {
-    const xauth_file = try open_xauth_file();
-    defer xauth_file.close();
-    const xauth = try read_xauth_file(allocator, xauth_file);
+pub fn get_auth(io: std.Io, environ: std.process.Environ, allocator: std.mem.Allocator) !XAuth {
+    const xauth_file = try open_xauth_file(io, environ);
+    defer xauth_file.close(io);
+    const xauth = try read_xauth_file(io, allocator, xauth_file);
     return xauth;
 }

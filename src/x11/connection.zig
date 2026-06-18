@@ -15,15 +15,16 @@ pub const ConnectionOptions = struct {
 
 /// Connects to local X11 server.
 /// It will look for DISPLAY env variable, or default to :0.
-pub fn connect(options: ConnectionOptions) !std.net.Stream {
-    var buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const socket_path = try get_socket_path(&buffer);
+pub fn connect(io: std.Io, environ: std.process.Environ, options: ConnectionOptions) !std.Io.net.Stream {
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const socket_path = try get_socket_path(environ, &buffer);
 
     log.debug("Socket path: {s}", .{socket_path});
 
     // Assuming unix socket
-    const stream = try std.net.connectUnixSocket(socket_path);
-    try setTimeout(stream.handle, options.read_timeout, options.write_timeout);
+    const unix_addr = try std.Io.net.UnixAddress.init(socket_path);
+    const stream = try unix_addr.connect(io);
+    try setTimeout(stream.socket.handle, options.read_timeout, options.write_timeout);
 
     log.debug("Connected", .{});
 
@@ -33,8 +34,8 @@ pub fn connect(options: ConnectionOptions) !std.net.Stream {
 /// Return the file path for the socket to active display.
 /// Look at DISPLAY env var for display, else default to :0
 /// Uses provided buffer and return only the needed part.
-fn get_socket_path(buffer: []u8) ![]const u8 {
-    const display = std.posix.getenv("DISPLAY") orelse ":0";
+fn get_socket_path(environ: std.process.Environ, buffer: []u8) ![]const u8 {
+    const display: []const u8 = environ.getPosix("DISPLAY") orelse ":0";
     log.debug("Display: {s}", .{display});
 
     // Find colon separator

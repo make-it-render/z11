@@ -6,6 +6,7 @@ const proto = @import("proto.zig");
 const io = @import("io.zig");
 
 const testing = std.testing;
+const endian = @import("builtin").cpu.arch.endian();
 
 const log = std.log.scoped(.x11);
 
@@ -95,7 +96,7 @@ test "bytesFromValues" {
 
 /// Like io.sendWithBytes, but this build the bytes based on values.
 /// Example is CreateWindow WindowValue (to go with WindowMasks).
-pub fn sendWithValues(conn: std.net.Stream, request: anytype, values: anytype) !void {
+pub fn sendWithValues(conn: std.Io.net.Stream, request: anytype, values: anytype) !void {
     var buffer = bufferFor(@TypeOf(values));
     const bytes = bytesFromValues(&buffer, values);
     try io.sendWithBytes(conn, request, bytes);
@@ -104,11 +105,11 @@ pub fn sendWithValues(conn: std.net.Stream, request: anytype, values: anytype) !
 /// Utility to get ID of an Atom.
 /// This is naive because it expects that the next message is always the reply.
 /// Works fine before you create a window.
-pub fn internAtom(conn: std.net.Stream, name: []const u8) !u32 {
+pub fn internAtom(io_inst: std.Io, conn: std.Io.net.Stream, name: []const u8) !u32 {
     const request = proto.InternAtom{ .length_of_name = @intCast(name.len) };
     try io.sendWithBytes(conn, request, name);
 
-    const reply = try receiveReply(conn, proto.InternAtomReply);
+    const reply = try receiveReply(io_inst, conn, proto.InternAtomReply);
     if (reply) |r| {
         return r.atom;
     }
@@ -142,10 +143,10 @@ pub const ClientMessageData = union(enum) {
     u32: [5]u32,
 };
 
-pub fn receiveReply(conn: std.net.Stream, ReplyType: type) !?ReplyType {
+pub fn receiveReply(io_inst: std.Io, conn: std.Io.net.Stream, ReplyType: type) !?ReplyType {
     var read_buffer: [32]u8 = undefined;
-    var conn_reader = conn.reader(&read_buffer);
-    const reader = conn_reader.interface();
+    var conn_reader = conn.reader(io_inst, &read_buffer);
+    const reader = &conn_reader.interface;
     return readReply(reader, ReplyType);
 }
 
@@ -157,10 +158,9 @@ pub fn readReply(reader: *std.Io.Reader, ReplyType: type) !?ReplyType {
     var message_buffer: [32]u8 = undefined;
     try reader.readSliceAll(&message_buffer);
 
-    var message_stream = std.io.fixedBufferStream(&message_buffer);
-    var message_reader = message_stream.reader();
+    var message_reader: std.Io.Reader = .fixed(&message_buffer);
 
-    const message = try message_reader.readStruct(ReplyType);
+    const message = try message_reader.takeStruct(ReplyType, endian);
 
     return message;
 }

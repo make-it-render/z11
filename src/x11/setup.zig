@@ -12,16 +12,16 @@ const endian = @import("builtin").cpu.arch.endian();
 
 /// First function to call on a new connection.
 /// It will return important information for most of following requests.
-pub fn setup(allocator: std.mem.Allocator, connection: std.net.Stream) !Setup {
-    const auth = try xauth.get_auth(allocator);
+pub fn setup(io: std.Io, environ: std.process.Environ, allocator: std.mem.Allocator, connection: std.Io.net.Stream) !Setup {
+    const auth = try xauth.get_auth(io, environ, allocator);
     defer auth.deinit();
 
     var read_buffer: [32]u8 = undefined;
-    var conn_reader = connection.reader(&read_buffer);
-    const reader = conn_reader.interface();
+    var conn_reader = connection.reader(io, &read_buffer);
+    const reader = &conn_reader.interface;
 
     var write_buffer: [32]u8 = undefined;
-    var conn_writer = connection.writer(&write_buffer);
+    var conn_writer = connection.writer(io, &write_buffer);
     const writer = &conn_writer.interface;
 
     try sendSetupRequest(writer, auth.name, auth.data);
@@ -64,23 +64,22 @@ fn readSetupReply(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Setup {
         else => return error.InvalidSetupStatus,
     }
 
-    var reply_stream = std.io.fixedBufferStream(reply);
-    var reply_reader = reply_stream.reader();
+    var reply_reader: std.Io.Reader = .fixed(reply);
 
-    const base_reply = try reply_reader.readStruct(proto.SetupContent);
+    const base_reply = try reply_reader.takeStruct(proto.SetupContent, endian);
     log.debug("Base setup: {any}", .{base_reply});
 
     if (base_reply.vendor_len > 1024) return error.SetupDataTooLarge;
     const vendor = try allocator.alloc(u8, base_reply.vendor_len);
     defer allocator.free(vendor);
-    _ = try reply_reader.read(vendor);
-    _ = try reply_reader.skipBytes(vendor.len % 4, .{}); // pad vendor
+    try reply_reader.readSliceAll(vendor);
+    try reply_reader.discardAll(vendor.len % 4); // pad vendor
 
     if (base_reply.pixmap_formats_len > 256) return error.SetupDataTooLarge;
     const formats = try allocator.alloc(proto.Format, base_reply.pixmap_formats_len);
     errdefer allocator.free(formats);
     for (formats, 0..) |_, format_index| {
-        formats[format_index] = try reply_reader.readStruct(proto.Format);
+        formats[format_index] = try reply_reader.takeStruct(proto.Format, endian);
         log.debug("Format: {any}", .{formats[format_index]});
     }
 
@@ -95,7 +94,7 @@ fn readSetupReply(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Setup {
     }
 
     for (screens, 0..) |_, screen_index| {
-        const screen = try reply_reader.readStruct(proto.Screen);
+        const screen = try reply_reader.takeStruct(proto.Screen, endian);
         screens[screen_index] = Screen.initFromProto(screen);
         log.debug("Screen: {any}", .{screens[screen_index]});
 
@@ -110,7 +109,7 @@ fn readSetupReply(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Setup {
         }
 
         for (allowed_depths, 0..) |_, depth_index| {
-            const depth = try reply_reader.readStruct(proto.Depth);
+            const depth = try reply_reader.takeStruct(proto.Depth, endian);
             allowed_depths[depth_index] = Depth.initFromProto(depth);
             log.debug("Allowed depths: {any}", .{allowed_depths[depth_index]});
 
@@ -119,7 +118,7 @@ fn readSetupReply(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Setup {
             errdefer allocator.free(visual_types);
 
             for (visual_types, 0..) |_, visual_type_index| {
-                visual_types[visual_type_index] = try reply_reader.readStruct(proto.VisualType);
+                visual_types[visual_type_index] = try reply_reader.takeStruct(proto.VisualType, endian);
                 log.debug("Visual type: {any}", .{visual_types[visual_type_index]});
             }
             allowed_depths[depth_index].visual_types = visual_types;
