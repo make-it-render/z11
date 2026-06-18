@@ -3,16 +3,18 @@
 
 /// Send a request to a socket.
 /// Use with any Request struct from proto namespace that does not need extra data.
-pub fn send(conn: std.Io.net.Stream, request: anytype) !void {
-    const req_bytes: []const u8 = &std.mem.toBytes(request);
-    //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
-    _ = std.posix.system.write(conn.socket.handle, req_bytes.ptr, req_bytes.len);
+pub fn send(io: std.Io, conn: std.Io.net.Stream, request: anytype) !void {
+    var buffer: [256]u8 = undefined;
+    var net_writer = conn.writer(io, &buffer);
+    const writer = &net_writer.interface;
+    try write(writer, request);
+    try writer.flush();
 }
 
 /// Send a request to a socket with some extra bytes at the end.
 /// It re-calculate the apropriate length and add needed padding.
 /// Use with Request structs from proto namespace that require additional data to be sent.
-pub fn sendWithBytes(conn: std.Io.net.Stream, request: anytype, extra_bytes: []const u8) !void {
+pub fn sendWithBytes(io: std.Io, conn: std.Io.net.Stream, request: anytype, extra_bytes: []const u8) !void {
     const req_bytes = request_bytes_fixed_len(request, extra_bytes.len);
     //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
 
@@ -20,14 +22,17 @@ pub fn sendWithBytes(conn: std.Io.net.Stream, request: anytype, extra_bytes: []c
     const padding: [3]u8 = .{ 0, 0, 0 };
     const pad = padding[0..pad_len];
 
-    _ = std.posix.system.write(conn.socket.handle, &req_bytes, req_bytes.len);
-    _ = std.posix.system.write(conn.socket.handle, extra_bytes.ptr, extra_bytes.len);
-    _ = std.posix.system.write(conn.socket.handle, pad.ptr, pad.len);
+    var buffer: [256]u8 = undefined;
+    var net_writer = conn.writer(io, &buffer);
+    const writer = &net_writer.interface;
+    try writer.writeAll(&req_bytes);
+    try writer.writeAll(extra_bytes);
+    try writer.writeAll(pad);
+    try writer.flush();
 }
 
-/// Write a request to a writer with some extra bytes at the end.
-/// It re-calculate the apropriate length and add needed padding.
-/// Use with Request structs from proto namespace that require additional data to be sent.
+/// Write a request into a writer (no flush; the caller controls when to flush).
+/// Use with any Request struct from proto namespace that does not need extra data.
 pub fn write(writer: *std.Io.Writer, request: anytype) !void {
     const req_bytes: []const u8 = &std.mem.toBytes(request);
     //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
@@ -111,42 +116,50 @@ test "padding length" {
     try testing.expectEqual(0, len3);
 }
 
-/// Receive a message from a socket.
-/// Reads exactly one 32-byte X11 message directly from the socket. Returns null
-/// when the read times out (SO_RCVTIMEO) with no message pending, so callers can
-/// poll in a loop.
+/// Receive a single X11 message (exactly 32 bytes) from a socket.
 ///
-/// We read via std.posix.read rather than a std.Io reader on purpose: the socket
-/// is configured with SO_RCVTIMEO, so a read times out with EAGAIN. std.posix.read
-/// maps EAGAIN to error.WouldBlock, whereas the std.Io.Threaded socket reader treats
-/// EAGAIN as a programmer bug and panics (it assumes blocking fds).
-pub fn receive(io: std.Io, conn: std.Io.net.Stream) !?Message {
-    _ = io;
+/// The `timeout` controls how long to wait for a message to start arriving:
+/// - `.none` blocks until a message arrives. The wait happens on a std.Io worker,
+///   so an idle caller uses no CPU (no busy-poll). Use this for event-driven loops
+///   and thread-per-source readers.
+/// - `.{ .duration = ... }` (or `.deadline`) returns `null` once it elapses with no
+///   message pending, so callers can poll, e.g. to render a frame on a fixed cadence.
+pub fn receive(io: std.Io, conn: std.Io.net.Stream, timeout: std.Io.Timeout) !?Message {
     var message_buffer: [32]u8 = undefined;
 
-    var received: usize = 0;
-    while (received < message_buffer.len) {
-        const n = std.posix.read(conn.socket.handle, message_buffer[received..]) catch |err| switch (err) {
-            // SO_RCVTIMEO fired. With no bytes read yet this is just an idle poll,
-            // so report "no message". Mid-message we keep waiting for the rest.
-            error.WouldBlock => {
-                if (received == 0) return null;
-                continue;
-            },
-            else => return err,
-        };
-        if (n == 0) return error.ConnectionClosed; // peer closed the connection
-        received += n;
+    switch (timeout) {
+        // Block until the whole message arrives (on a std.Io worker, so idle = no CPU).
+        .none => try receiveBytes(io, conn, &message_buffer),
+        // Wait up to `timeout` for the first bytes; report "no message" if it elapses.
+        else => {
+            const message = conn.socket.receiveTimeout(io, &message_buffer, timeout) catch |err| switch (err) {
+                error.Timeout => return null, // idle: no message within the timeout
+                else => return err,
+            };
+            if (message.data.len == 0) return error.ConnectionClosed; // peer closed
+            // The first read may be partial; block for the rest of the 32-byte message.
+            if (message.data.len < message_buffer.len) {
+                try receiveBytes(io, conn, message_buffer[message.data.len..]);
+            }
+        },
     }
 
     return parseMessage(message_buffer);
 }
 
-/// Receive next message from X11 server, reading from an existing reader.
-pub fn read(reader: *std.Io.Reader) !?Message {
-    var message_buffer: [32]u8 = undefined;
-    try reader.readSliceAll(&message_buffer);
-    return parseMessage(message_buffer);
+/// Read exactly `buffer.len` bytes from the connection, blocking until they all arrive.
+///
+/// This is the single primitive every socket read goes through. It uses recvmsg, which
+/// only ever consumes what we ask for (the kernel keeps the rest), so there is no
+/// read-ahead buffer that could strand bytes between successive reads — replies and
+/// their trailing data stay perfectly aligned without sharing a stateful reader.
+pub fn receiveBytes(io: std.Io, conn: std.Io.net.Stream, buffer: []u8) !void {
+    var received: usize = 0;
+    while (received < buffer.len) {
+        const message = try conn.socket.receive(io, buffer[received..]);
+        if (message.data.len == 0) return error.ConnectionClosed; // peer closed mid-read
+        received += message.data.len;
+    }
 }
 
 /// Decode a raw 32-byte X11 message into a Message union value.

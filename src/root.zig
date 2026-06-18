@@ -35,8 +35,8 @@ pub const send = io.send;
 pub const write = io.write;
 pub const stream = io.stream;
 pub const sendWithBytes = io.sendWithBytes;
-pub const sendFromReader = io.sendFromReader;
 pub const receive = io.receive;
+pub const receiveBytes = io.receiveBytes;
 pub const Message = io.Message;
 
 pub const ImageInfo = image.ImageInfo;

@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
     // This function send a request (in this case: InterAtom) to X11, with some extra bytes
     // It calculates the right length and padding that X11 expects
     // There are other ways to send requests futher below
-    try x11.sendWithBytes(conn, intern_wm_protocols, "WM_PROTOCOLS");
+    try x11.sendWithBytes(io, conn, intern_wm_protocols, "WM_PROTOCOLS");
 
     // InternAtom generated a reply, here we read it
     const wm_protocols = try x11.receiveReply(io, conn, x11.proto.InternAtomReply);
@@ -77,12 +77,12 @@ pub fn main(init: std.process.Init) !void {
         .value_mask = x11.maskFromValues(x11.proto.WindowMask, window_values),
     };
     // Here we send the CreateWindow request, with the extra values
-    try x11.sendWithValues(conn, create_window, window_values);
+    try x11.sendWithValues(io, conn, create_window, window_values);
 
     // After creating a Window, we Map it so it appears
     const map_req = x11.proto.MapWindow{ .window_id = window_id };
     // This is how you send a request without extra information
-    try x11.send(conn, map_req);
+    try x11.send(io, conn, map_req);
 
     // === Changing Window Properties === //
 
@@ -93,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
         .property_type = string_atom,
         .length_of_data = 5,
     };
-    try x11.sendWithBytes(conn, set_name_req, "hello");
+    try x11.sendWithBytes(io, conn, set_name_req, "hello");
 
     // Setting the Protocol to receive the window delete notification from window manager
     const set_protocols = x11.proto.ChangeProperty{
@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
         .format = 32,
         .length_of_data = 1,
     };
-    try x11.sendWithBytes(conn, set_protocols, &std.mem.toBytes(wm_delete_window_atom));
+    try x11.sendWithBytes(io, conn, set_protocols, &std.mem.toBytes(wm_delete_window_atom));
 
     // === Drawing and graphics === //
 
@@ -120,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
         .drawable_id = window_id,
         .value_mask = x11.maskFromValues(x11.proto.GraphicContextMask, graphic_context_values),
     };
-    try x11.sendWithValues(conn, create_gc, graphic_context_values);
+    try x11.sendWithValues(io, conn, create_gc, graphic_context_values);
 
     // We draw in a pixmap
     // This is where the pixels go
@@ -132,7 +132,7 @@ pub fn main(init: std.process.Init) !void {
         .height = 5,
         .depth = create_window.depth,
     };
-    try x11.send(conn, pixmap_req);
+    try x11.send(io, conn, pixmap_req);
 
     // Let's make a little yellow triangle
     const y = [4]u8{ 255, 150, 0, 1 };
@@ -186,10 +186,13 @@ pub fn main(init: std.process.Init) !void {
     var draw_start = std.Io.Clock.now(.awake, io);
 
     // Now we have the main loop
-    // Here we receive events and send draw requests
+    // Here we receive events and send draw requests.
+    // We pass `.none` so receive blocks until an event arrives instead of busy-polling:
+    // while idle the process uses no CPU. (For an animation/game loop you would pass a
+    // timeout, e.g. `.{ .duration = frame_budget }`, and render a frame when it elapses.)
     var open = true;
     while (open) {
-        while (try x11.receive(io, conn)) |message| {
+        if (try x11.receive(io, conn, .none)) |message| {
             switch (message) {
                 .Expose => {
                     draw_start = std.Io.Clock.now(.awake, io);
@@ -201,7 +204,7 @@ pub fn main(init: std.process.Init) !void {
                     const clear_area = x11.proto.ClearArea{
                         .window_id = window_id,
                     };
-                    try x11.send(conn, clear_area);
+                    try x11.send(io, conn, clear_area);
 
                     // Than we copy our pixmap to our window
                     // again using the graphic context
@@ -215,7 +218,7 @@ pub fn main(init: std.process.Init) !void {
                         .dst_x = 100,
                         .dst_y = 200,
                     };
-                    try x11.send(conn, copy_area_req);
+                    try x11.send(io, conn, copy_area_req);
 
                     const draw_end = std.Io.Clock.now(.awake, io);
                     const elapsed_ms: i64 = @intCast(@divTrunc(draw_start.durationTo(draw_end).nanoseconds, std.time.ns_per_ms));
@@ -235,10 +238,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // When done, we can release all resources.
-    try x11.send(conn, x11.proto.FreeGraphicContext{ .graphic_context_id = graphic_context_id });
-    try x11.send(conn, x11.proto.FreePixmap{ .pixmap_id = pixmap_id });
-    try x11.send(conn, x11.proto.UnmapWindow{ .window_id = window_id });
-    try x11.send(conn, x11.proto.DestroyWindow{ .window_id = window_id });
+    try x11.send(io, conn, x11.proto.FreeGraphicContext{ .graphic_context_id = graphic_context_id });
+    try x11.send(io, conn, x11.proto.FreePixmap{ .pixmap_id = pixmap_id });
+    try x11.send(io, conn, x11.proto.UnmapWindow{ .window_id = window_id });
+    try x11.send(io, conn, x11.proto.DestroyWindow{ .window_id = window_id });
 }
 
 const log = std.log.scoped(.demo);

@@ -96,10 +96,10 @@ test "bytesFromValues" {
 
 /// Like io.sendWithBytes, but this build the bytes based on values.
 /// Example is CreateWindow WindowValue (to go with WindowMasks).
-pub fn sendWithValues(conn: std.Io.net.Stream, request: anytype, values: anytype) !void {
+pub fn sendWithValues(io_inst: std.Io, conn: std.Io.net.Stream, request: anytype, values: anytype) !void {
     var buffer = bufferFor(@TypeOf(values));
     const bytes = bytesFromValues(&buffer, values);
-    try io.sendWithBytes(conn, request, bytes);
+    try io.sendWithBytes(io_inst, conn, request, bytes);
 }
 
 /// Utility to get ID of an Atom.
@@ -107,7 +107,7 @@ pub fn sendWithValues(conn: std.Io.net.Stream, request: anytype, values: anytype
 /// Works fine before you create a window.
 pub fn internAtom(io_inst: std.Io, conn: std.Io.net.Stream, name: []const u8) !u32 {
     const request = proto.InternAtom{ .length_of_name = @intCast(name.len) };
-    try io.sendWithBytes(conn, request, name);
+    try io.sendWithBytes(io_inst, conn, request, name);
 
     const reply = try receiveReply(io_inst, conn, proto.InternAtomReply);
     if (reply) |r| {
@@ -143,26 +143,19 @@ pub const ClientMessageData = union(enum) {
     u32: [5]u32,
 };
 
+/// Read a fixed 32-byte reply from the connection and decode it as `ReplyType`.
+///
+/// Replies don't follow the same rules as regular Messages: they can't be identified by
+/// their first byte, so the caller explicitly waits for the reply it expects. Replies with
+/// trailing data (GetProperty, GetKeyboardMapping, ...) read that data separately via
+/// io.receiveBytes — both use the same recvmsg primitive, so the byte stream stays aligned
+/// with no read-ahead buffer to strand bytes.
 pub fn receiveReply(io_inst: std.Io, conn: std.Io.net.Stream, ReplyType: type) !?ReplyType {
-    var read_buffer: [32]u8 = undefined;
-    var conn_reader = conn.reader(io_inst, &read_buffer);
-    const reader = &conn_reader.interface;
-    return readReply(reader, ReplyType);
-}
-
-/// Same a io.Receive, but for specific replies.
-/// Replies don't follow quite the same rules as regular Messages,
-/// It cannot be identified by first code.
-/// So here we explicitly wait for a reply.
-pub fn readReply(reader: *std.Io.Reader, ReplyType: type) !?ReplyType {
     var message_buffer: [32]u8 = undefined;
-    try reader.readSliceAll(&message_buffer);
+    try io.receiveBytes(io_inst, conn, &message_buffer);
 
     var message_reader: std.Io.Reader = .fixed(&message_buffer);
-
-    const message = try message_reader.takeStruct(ReplyType, endian);
-
-    return message;
+    return try message_reader.takeStruct(ReplyType, endian);
 }
 
 test "clientMessageData format 8 returns u8 array" {

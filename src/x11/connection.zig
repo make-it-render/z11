@@ -1,21 +1,16 @@
 //! Functions to connect to an X11 server.
 
 const std = @import("std");
-const os = std.posix;
 
 const log = std.log.scoped(.x11);
 
-/// Options for the X11 connection
-pub const ConnectionOptions = struct {
-    /// Read timeout in microseconds (5000 => 5ms)
-    read_timeout: i32 = 5000, // 5ms in microseconds
-    /// Write timeout in microseconds (5000 => 5ms)
-    write_timeout: i32 = 15000, // 15ms in microseconds
-};
+/// Options for the X11 connection.
+pub const ConnectionOptions = struct {};
 
 /// Connects to local X11 server.
 /// It will look for DISPLAY env variable, or default to :0.
 pub fn connect(io: std.Io, environ: std.process.Environ, options: ConnectionOptions) !std.Io.net.Stream {
+    _ = options;
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const socket_path = try get_socket_path(environ, &buffer);
 
@@ -24,7 +19,6 @@ pub fn connect(io: std.Io, environ: std.process.Environ, options: ConnectionOpti
     // Assuming unix socket
     const unix_addr = try std.Io.net.UnixAddress.init(socket_path);
     const stream = try unix_addr.connect(io);
-    try setTimeout(stream.socket.handle, options.read_timeout, options.write_timeout);
 
     log.debug("Connected", .{});
 
@@ -61,32 +55,4 @@ fn get_socket_path(environ: std.process.Environ, buffer: []u8) ![]const u8 {
     @memcpy(path[0..base.len], base);
     @memcpy(path[base.len..], display_num);
     return path;
-}
-
-/// Set read and write timeout on a socket.
-/// Timeout units in microseconds (1000 microsecond is 1 millisecond).
-fn setTimeout(socket: os.socket_t, read_timeout: i32, write_timeout: i32) !void {
-    if (read_timeout > 0) {
-        var timeout: os.timeval = undefined;
-        timeout.sec = @as(c_long, @intCast(@divTrunc(read_timeout, 1000000)));
-        timeout.usec = @as(c_long, @intCast(@mod(read_timeout, 1000000)));
-        try os.setsockopt(
-            socket,
-            os.SOL.SOCKET,
-            os.SO.RCVTIMEO,
-            std.mem.toBytes(timeout)[0..],
-        );
-    }
-
-    if (write_timeout > 0) {
-        var timeout: os.timeval = undefined;
-        timeout.sec = @as(c_long, @intCast(@divTrunc(write_timeout, 1000000)));
-        timeout.usec = @as(c_long, @intCast(@mod(write_timeout, 1000000)));
-        try os.setsockopt(
-            socket,
-            os.SOL.SOCKET,
-            os.SO.SNDTIMEO,
-            std.mem.toBytes(timeout)[0..],
-        );
-    }
 }
