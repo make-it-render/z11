@@ -1291,6 +1291,26 @@ pub const GetKeyboardMappingReply = extern struct {
     pad: [24]u8,
 };
 
+pub const GetModifierMapping = extern struct {
+    opcode: u8 = 119,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+};
+
+/// `keycodes_per_modifier` keycodes for each of the eight modifiers follow the reply, Shift first and Mod5 last; a zero keycode is an empty slot.
+pub const GetModifierMappingReply = extern struct {
+    code: u8 = 1,
+    keycodes_per_modifier: u8,
+    sequence_number: u16,
+    reply_length: u32,
+    pad: [24]u8,
+
+    /// The bytes of keycodes that follow the fixed reply.
+    pub fn keycodeBytes(self: @This()) usize {
+        return @as(usize, self.keycodes_per_modifier) * 8;
+    }
+};
+
 pub const NoOperation = extern struct {
     opcode: u8 = 127,
     unused: u8 = 0,
@@ -1370,6 +1390,14 @@ test "selection requests carry the lengths the protocol fixes" {
     try testing.expectEqual(@as(u16, 4), (SetSelectionOwner{ .owner = 0, .selection = 0 }).length);
     try testing.expectEqual(@as(u16, 2), (GetSelectionOwner{ .selection = 0 }).length);
     try testing.expectEqual(@as(u16, 6), (ConvertSelection{ .requestor = 0, .selection = 0, .target = 0, .property = 0 }).length);
+}
+
+test "GetModifierMapping is one unit and its reply sizes the keycodes that follow" {
+    try testing.expectEqual(@as(usize, 4), @sizeOf(GetModifierMapping));
+    try testing.expectEqual(@as(u16, 1), (GetModifierMapping{}).length);
+    try testing.expectEqual(@as(usize, 32), @sizeOf(GetModifierMappingReply));
+    const reply = GetModifierMappingReply{ .keycodes_per_modifier = 4, .sequence_number = 0, .reply_length = 8, .pad = @splat(0) };
+    try testing.expectEqual(@as(usize, 32), reply.keycodeBytes());
 }
 
 test "Reply.as reinterprets the fixed bytes and extraLength scales by four" {

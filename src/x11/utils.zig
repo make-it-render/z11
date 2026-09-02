@@ -143,19 +143,29 @@ pub const ClientMessageData = union(enum) {
     u32: [5]u32,
 };
 
-/// Read a fixed 32-byte reply from the connection and decode it as `ReplyType`.
+/// Read the next reply from the connection and decode it as `ReplyType`; null when the server answered with an error instead.
 ///
 /// Replies don't follow the same rules as regular Messages: they can't be identified by
 /// their first byte, so the caller explicitly waits for the reply it expects. Replies with
 /// trailing data (GetProperty, GetKeyboardMapping, ...) read that data separately via
 /// io.receiveBytes — both use the same recvmsg primitive, so the byte stream stays aligned
-/// with no read-ahead buffer to strand bytes.
+/// with no read-ahead buffer to strand bytes. Events that arrive ahead of the reply are
+/// dropped: a freshly started server sends MappingNotify to a new client, and taking it for
+/// the reply misaligns every read after it.
 pub fn receiveReply(io_inst: std.Io, conn: std.Io.net.Stream, ReplyType: type) !?ReplyType {
     var message_buffer: [32]u8 = undefined;
-    try io.receiveBytes(io_inst, conn, &message_buffer);
-
-    var message_reader: std.Io.Reader = .fixed(&message_buffer);
-    return try message_reader.takeStruct(ReplyType, endian);
+    while (true) {
+        try io.receiveBytes(io_inst, conn, &message_buffer);
+        switch (message_buffer[0] & 0x7F) {
+            0 => return null,
+            1 => {
+                var message_reader: std.Io.Reader = .fixed(&message_buffer);
+                return try message_reader.takeStruct(ReplyType, endian);
+            },
+            // Core and extension events are 32 bytes. A GenericEvent carries more, but only an extension this client never enables (XInput 2, Present) sends one.
+            else => |code| log.debug("Dropping event {d} that arrived ahead of a reply", .{code}),
+        }
+    }
 }
 
 test "clientMessageData format 8 returns u8 array" {
