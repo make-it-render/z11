@@ -27,6 +27,9 @@ pub const extension = @import("x11/extension.zig");
 /// MIT-SHM: push frames through shared memory instead of over the socket.
 pub const shm = @import("x11/ext/shm.zig");
 
+/// XFixes: selection-owner change events.
+pub const xfixes = @import("x11/ext/xfixes.zig");
+
 pub const ConnectionOptions = connection.ConnectionOptions;
 pub const connect = connection.connect;
 
@@ -74,4 +77,5 @@ test {
     _ = utils;
     _ = extension;
     _ = shm;
+    _ = xfixes;
 }
