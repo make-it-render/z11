@@ -40,6 +40,24 @@ pub fn build(b: *std.Build) void {
     }
 
     {
+        const shm_verify_mod = b.addModule("shm_verify", .{
+            .root_source_file = b.path("src/shm_verify.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        shm_verify_mod.addImport("x11", x11);
+
+        const shm_verify_exe = b.addExecutable(.{
+            .name = "shm-verify",
+            .root_module = shm_verify_mod,
+        });
+
+        const run_cmd = b.addRunArtifact(shm_verify_exe);
+        const run_step = b.step("shm-verify", "Verify the MIT-SHM path against a live X server");
+        run_step.dependOn(&run_cmd.step);
+    }
+
+    {
         const tests_mod = b.addModule("tests", .{
             .root_source_file = b.path("src/root.zig"),
             .target = target,

@@ -532,9 +532,48 @@ pub const PropertyNotify = extern struct {
     pad: [15]u8,
 };
 
-pub const SelectionClear = Placeholder;
-pub const SelectionRequest = Placeholder;
-pub const SelectionNotify = Placeholder;
+/// Another client took a selection we owned (code 29). `owner` is the window that lost it.
+pub const SelectionClear = extern struct {
+    code: u8 = 29,
+    unused: u8 = 0,
+    sequence_number: u16 = 0,
+    time: u32,
+    owner: u32,
+    selection: u32,
+    pad: [16]u8 = .{0} ** 16,
+};
+
+/// A client wants our selection converted to `target` and written to `property` on
+/// `requestor` (code 30). `property` is 0 (None) from pre-ICCCM clients: use `target` as
+/// the property name then. Answer with a SelectionNotify sent to the requestor.
+pub const SelectionRequest = extern struct {
+    code: u8 = 30,
+    unused: u8 = 0,
+    sequence_number: u16 = 0,
+    time: u32,
+    owner: u32,
+    requestor: u32,
+    selection: u32,
+    target: u32,
+    property: u32,
+    pad: [4]u8 = .{0} ** 4,
+};
+
+/// The owner answered our ConvertSelection (code 31): the data is in `property` on
+/// `requestor`, or `property` is 0 (None) when the owner refused. Also the struct an owner
+/// fills in and sends through SendEvent.
+pub const SelectionNotify = extern struct {
+    code: u8 = 31,
+    unused: u8 = 0,
+    sequence_number: u16 = 0,
+    time: u32,
+    requestor: u32,
+    selection: u32,
+    target: u32,
+    property: u32,
+    pad: [8]u8 = .{0} ** 8,
+};
+
 pub const ColormapNotify = Placeholder;
 
 pub const ClientMessage = extern struct {
@@ -777,6 +816,32 @@ pub const InternAtomReply = extern struct {
     unused: [20]u8,
 };
 
+/// Ask the server whether an extension is available, and under which opcodes.
+/// Extension opcodes are assigned per-connection, so they can never be hardcoded.
+pub const QueryExtension = extern struct {
+    opcode: u8 = 98,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4, // sendWithBytes recomputes this to cover name+padding
+    length_of_name: u16,
+    unused2: [2]u8 = [2]u8{ 0, 0 },
+};
+
+pub const QueryExtensionReply = extern struct {
+    reply: u8,
+    unused: u8,
+    sequence_number: u16,
+    reply_length: u32,
+    /// 0 when the server does not have the extension.
+    present: u8,
+    /// First byte of every request belonging to this extension.
+    major_opcode: u8,
+    /// Extension event codes start here.
+    first_event: u8,
+    /// Extension error codes start here.
+    first_error: u8,
+    unused2: [20]u8,
+};
+
 pub const ChangeProperty = extern struct {
     opcode: u8 = 18,
     mode: enum(u8) { Replace, Prepend, Append } = .Replace,
@@ -827,6 +892,52 @@ pub const ListProperties = extern struct {
 };
 
 //TODO: ListProperties Reply
+
+/// Claim `selection` for `owner`, or give it up with `owner` 0 (None). No reply; the server
+/// ignores the request when `time` is older than the current owner's claim, and reports a
+/// loss of ownership later with SelectionClear.
+pub const SetSelectionOwner = extern struct {
+    opcode: u8 = 22,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    /// Window, or 0 (None) to release the selection.
+    owner: u32,
+    selection: u32,
+    /// Server time of the event that triggered the claim; 0 is CurrentTime.
+    time: u32 = 0,
+};
+
+pub const GetSelectionOwner = extern struct {
+    opcode: u8 = 23,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    selection: u32,
+};
+
+pub const GetSelectionOwnerReply = extern struct {
+    code: u8 = 1,
+    unused: u8,
+    sequence_number: u16,
+    reply_length: u32,
+    /// 0 (None) when nobody owns the selection.
+    owner: u32,
+    pad: [20]u8,
+};
+
+/// Ask the owner of `selection` to convert it to `target` and store the result in
+/// `property` on `requestor`. The answer is a SelectionNotify event on `requestor`; when
+/// nobody owns the selection the server itself sends one with `property` 0.
+pub const ConvertSelection = extern struct {
+    opcode: u8 = 24,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    requestor: u32,
+    selection: u32,
+    target: u32,
+    property: u32,
+    /// Server time of the event that triggered the request; 0 is CurrentTime.
+    time: u32 = 0,
+};
 
 pub const ClientMessageEvent = extern struct {
     code: u8 = 33,
@@ -1054,6 +1165,31 @@ pub const PutImage = extern struct {
     pad: [2]u8 = .{ 0, 0 },
 };
 
+/// Read pixels back off a drawable. The reply is followed by the image data, which the caller
+/// reads separately with io.receiveBytes (reply_length is in 4-byte words).
+pub const GetImage = extern struct {
+    opcode: u8 = 73,
+    format: ImageFormat = .ZPixmap,
+    length: u16 = @sizeOf(@This()) / 4,
+    drawable_id: u32,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    /// Which planes to read; all of them by default.
+    plane_mask: u32 = 0xFFFFFFFF,
+};
+
+pub const GetImageReply = extern struct {
+    reply: u8,
+    depth: u8,
+    sequence_number: u16,
+    /// Length of the trailing image data, in 4-byte words.
+    reply_length: u32,
+    visual_id: u32,
+    unused: [20]u8,
+};
+
 /// GrabPointer (opcode 26)
 pub const GrabPointer = extern struct {
     opcode: u8 = 26,
@@ -1173,6 +1309,29 @@ pub const ErrorMessage = extern struct {
     pad: [21]u8, // error messages always have 32 bytes total
 };
 
+/// The first 32 bytes of any reply (code 1), before it is known which request it answers.
+/// `reply_length` counts the 4-byte units that follow these 32 bytes; a reader that is not
+/// expecting the reply must still drain them or every later message is misaligned.
+pub const Reply = extern struct {
+    code: u8 = 1,
+    /// Request-specific byte (GetProperty's `format`, for one).
+    data: u8,
+    sequence_number: u16,
+    reply_length: u32,
+    rest: [24]u8,
+
+    /// Reinterpret as the concrete reply struct of the request that was sent.
+    pub fn as(self: *const @This(), ReplyType: type) ReplyType {
+        comptime std.debug.assert(@sizeOf(ReplyType) == 32);
+        return std.mem.bytesToValue(ReplyType, std.mem.asBytes(self));
+    }
+
+    /// Bytes that follow the fixed 32, to be read before the next message.
+    pub fn extraLength(self: *const @This()) usize {
+        return @as(usize, self.reply_length) * 4;
+    }
+};
+
 pub const ErrorCodes = enum(u8) {
     NoError, // ??
     Request,
@@ -1192,4 +1351,39 @@ pub const ErrorCodes = enum(u8) {
     Name,
     Length,
     Implementation,
+    /// Extension errors (BadShmSeg etc.) are assigned at runtime from
+    /// QueryExtensionReply.first_error, so they land here rather than being
+    /// illegal values. Compare the raw byte against the extension's first_error
+    /// to tell which extension raised it.
+    _,
 };
+
+test "selection events and the generic reply are one X11 message each" {
+    try testing.expectEqual(@as(usize, 32), @sizeOf(SelectionClear));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(SelectionRequest));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(SelectionNotify));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(Reply));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(GetSelectionOwnerReply));
+}
+
+test "selection requests carry the lengths the protocol fixes" {
+    try testing.expectEqual(@as(u16, 4), (SetSelectionOwner{ .owner = 0, .selection = 0 }).length);
+    try testing.expectEqual(@as(u16, 2), (GetSelectionOwner{ .selection = 0 }).length);
+    try testing.expectEqual(@as(u16, 6), (ConvertSelection{ .requestor = 0, .selection = 0, .target = 0, .property = 0 }).length);
+}
+
+test "Reply.as reinterprets the fixed bytes and extraLength scales by four" {
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 1;
+    bytes[1] = 8; // format
+    bytes[4] = 3; // reply_length = 3 units
+    bytes[16] = 7; // GetPropertyReply.value_len low byte (offset 16)
+    const reply = std.mem.bytesToValue(Reply, &bytes);
+    try testing.expectEqual(@as(usize, 12), reply.extraLength());
+    const property = reply.as(GetPropertyReply);
+    try testing.expectEqual(@as(u8, 8), property.format);
+    try testing.expectEqual(@as(u32, 7), property.value_len);
+}
+
+const std = @import("std");
+const testing = std.testing;

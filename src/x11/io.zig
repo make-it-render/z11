@@ -31,6 +31,81 @@ pub fn sendWithBytes(io: std.Io, conn: std.Io.net.Stream, request: anytype, extr
     try writer.flush();
 }
 
+/// Send a request that carries a file descriptor to the server, as MIT-SHM's AttachFd needs.
+///
+/// The fd travels out-of-band in an SCM_RIGHTS control message rather than in the request body,
+/// so this cannot go through a std.Io.Writer and has to reach for sendmsg directly. Zig 0.16 has
+/// no std.posix.sendmsg and no CMSG_* helpers, so the control message is laid out by hand below.
+///
+/// Two things the caller owns:
+///   - **Ordering.** This writes straight to the socket, so it overtakes anything still sitting in
+///     a buffered writer over the same connection. Flush that writer first.
+///   - **The fd.** sendmsg duplicates it into the server; our copy is still ours to close.
+///
+/// The write is a raw blocking syscall, not an `io` cancelation point. That is fine for the tiny,
+/// init-time requests this is meant for, and the reason it takes no `std.Io`.
+pub fn sendWithFd(conn: std.Io.net.Stream, request: anytype, fd: std.posix.fd_t) !void {
+    const req_bytes = std.mem.toBytes(request);
+    var iov = [_]std.posix.iovec_const{.{ .base = &req_bytes, .len = req_bytes.len }};
+
+    var control: [cmsgSpace(@sizeOf(std.posix.fd_t))]u8 align(@alignOf(linux.cmsghdr)) = undefined;
+    const header: *linux.cmsghdr = @ptrCast(&control);
+    header.* = .{
+        .len = cmsgLen(@sizeOf(std.posix.fd_t)),
+        .level = std.posix.SOL.SOCKET,
+        .type = linux.SCM.RIGHTS,
+    };
+    @memcpy(control[cmsgDataOffset()..][0..@sizeOf(std.posix.fd_t)], std.mem.asBytes(&fd));
+
+    const message = linux.msghdr_const{
+        .name = null,
+        .namelen = 0,
+        .iov = &iov,
+        .iovlen = 1,
+        .control = &control,
+        .controllen = control.len,
+        .flags = 0,
+    };
+
+    while (true) {
+        const rc = linux.sendmsg(conn.socket.handle, &message, 0);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => {
+                // A short send would desync the request stream with no way to resend the fd, so
+                // refuse rather than corrupt it. These requests are a few bytes; it does not happen.
+                if (rc != req_bytes.len) return error.SendWithFdTruncated;
+                return;
+            },
+            .INTR => continue,
+            .AGAIN => return error.WouldBlock,
+            .PIPE, .CONNRESET => return error.ConnectionClosed,
+            .NOMEM, .NOBUFS => return error.SystemResources,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
+/// Byte offset of a control message's payload: the header rounded up to its alignment.
+/// Mirrors the kernel's CMSG_DATA.
+fn cmsgDataOffset() usize {
+    return cmsgAlign(@sizeOf(linux.cmsghdr));
+}
+
+/// Round up to the kernel's control-message alignment. Mirrors CMSG_ALIGN.
+fn cmsgAlign(len: usize) usize {
+    return (len + @sizeOf(usize) - 1) & ~(@as(usize, @sizeOf(usize)) - 1);
+}
+
+/// Value for cmsghdr.len: header plus payload, payload unpadded. Mirrors CMSG_LEN.
+fn cmsgLen(payload_len: usize) usize {
+    return cmsgDataOffset() + payload_len;
+}
+
+/// Buffer size needed to hold one control message, payload padded. Mirrors CMSG_SPACE.
+fn cmsgSpace(payload_len: usize) usize {
+    return cmsgDataOffset() + cmsgAlign(payload_len);
+}
+
 /// Write a request into a writer (no flush; the caller controls when to flush).
 /// Use with any Request struct from proto namespace that does not need extra data.
 pub fn write(writer: *std.Io.Writer, request: anytype) !void {
@@ -175,24 +250,35 @@ fn parseMessage(message_buffer: [32]u8) !?Message {
     const message_tag = std.meta.Tag(Message); // Get Tag object of list of possible messages
     const message_values = comptime std.meta.fields(message_tag); // Get all fields of the Tag
     inline for (message_values) |tag| { // For each possible message
-        // Here is emitted code
-        if (message_code == tag.value) { // The tag value is the same as the received message
-            // Return the struct from the bytes and build the union.
-            const message = try message_reader.takeStruct(@field(proto, tag.name), endian);
-            //log.debug("Received message ({any}): {any}", .{ sent_event, message });
-            return @unionInit(Message, tag.name, message);
+        // Generic is not a wire code, it is the fallback below. Skipping it at comptime also
+        // keeps @field(proto, ...) from being analyzed for a name proto does not define.
+        if (comptime !std.mem.eql(u8, tag.name, "Generic")) {
+            // Here is emitted code
+            if (message_code == tag.value) { // The tag value is the same as the received message
+                // Return the struct from the bytes and build the union.
+                const message = try message_reader.takeStruct(@field(proto, tag.name), endian);
+                //log.debug("Received message ({any}): {any}", .{ sent_event, message });
+                return @unionInit(Message, tag.name, message);
+            }
         }
     }
 
-    log.warn("Unrecognized message: code={d} bytes={any} sent={any}", .{ message_code, &message_buffer, sent_event });
+    // Extension events carry codes assigned at runtime (first_event), so they can never have a
+    // static variant. Hand the raw bytes back and let the caller match the code against the
+    // first_event of whichever extension it negotiated.
+    log.debug("Generic message: code={d} sent={any}", .{ message_code, sent_event });
 
-    return null;
+    var generic = std.mem.bytesToValue(GenericEvent, &message_buffer);
+    generic.code = message_code; // masked, so callers compare against first_event directly
+    return .{ .Generic = generic };
 }
 
 /// A Map with all known messages, in order of message code.
 pub const Message = union(enum(u8)) {
     ErrorMessage: proto.ErrorMessage,
-    Placeholder: proto.Placeholder,
+    /// A reply (code 1) read where an event was expected. It answers whatever request the
+    /// caller last sent with a reply; see `proto.Reply.extraLength` for what to drain.
+    Reply: proto.Reply,
     KeyPress: proto.KeyPress,
     KeyRelease: proto.KeyRelease,
     ButtonPress: proto.ButtonPress,
@@ -226,11 +312,185 @@ pub const Message = union(enum(u8)) {
     ColormapNotify: proto.ColormapNotify,
     ClientMessage: proto.ClientMessage,
     MappingNotify: proto.MappingNotify,
+    /// Any code with no static variant above — extension events, and core codes we do not model.
+    /// Pinned to 255 so it stays clear of the 0..127 range a real event code can occupy.
+    Generic: GenericEvent = 255,
 };
+
+/// An undecoded 32-byte message. `code` already has the SendEvent bit masked off.
+pub const GenericEvent = extern struct {
+    code: u8,
+    bytes: [31]u8,
+
+    /// Reinterpret the raw bytes as a concrete extension event struct, e.g. shm.Completion.
+    /// Only valid once `code` has been matched against that extension's first_event.
+    pub fn as(self: *const @This(), EventType: type) EventType {
+        comptime std.debug.assert(@sizeOf(EventType) == 32);
+        return std.mem.bytesToValue(EventType, std.mem.asBytes(self));
+    }
+};
+
+test "parseMessage decodes a known core event" {
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 12; // Expose
+
+    const message = (try parseMessage(bytes)).?;
+    try testing.expect(message == .Expose);
+}
+
+test "parseMessage decodes the selection events" {
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 30; // SelectionRequest
+    std.mem.writeInt(u32, bytes[12..16], 0x400001, endian); // requestor
+    std.mem.writeInt(u32, bytes[20..24], 0x1F0, endian); // target
+
+    const request = (try parseMessage(bytes)).?;
+    try testing.expect(request == .SelectionRequest);
+    try testing.expectEqual(@as(u32, 0x400001), request.SelectionRequest.requestor);
+    try testing.expectEqual(@as(u32, 0x1F0), request.SelectionRequest.target);
+
+    bytes[0] = 29;
+    try testing.expect((try parseMessage(bytes)).? == .SelectionClear);
+    bytes[0] = 31;
+    try testing.expect((try parseMessage(bytes)).? == .SelectionNotify);
+}
+
+test "parseMessage hands a reply back with its trailing length" {
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 1;
+    std.mem.writeInt(u32, bytes[4..8], 5, endian);
+
+    const message = (try parseMessage(bytes)).?;
+    try testing.expect(message == .Reply);
+    try testing.expectEqual(@as(usize, 20), message.Reply.extraLength());
+}
+
+test "parseMessage returns Generic for an extension event code" {
+    // 65 is a plausible MIT-SHM first_event. No static variant covers it.
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 65;
+    bytes[4] = 3; // minor_event, i.e. ShmPutImage
+    bytes[31] = 0xAB;
+
+    const message = (try parseMessage(bytes)).?;
+    try testing.expect(message == .Generic);
+    try testing.expectEqual(@as(u8, 65), message.Generic.code);
+    // The payload survives intact for the caller to reinterpret.
+    try testing.expectEqual(@as(u8, 3), message.Generic.bytes[3]);
+    try testing.expectEqual(@as(u8, 0xAB), message.Generic.bytes[30]);
+}
+
+test "parseMessage masks the SendEvent bit off a Generic code" {
+    // A SendEvent-generated extension event still has to match first_event.
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 65 | 0b10000000;
+
+    const message = (try parseMessage(bytes)).?;
+    try testing.expectEqual(@as(u8, 65), message.Generic.code);
+}
+
+test "Generic tag value cannot collide with a wire event code" {
+    // Wire codes are 0..127 after masking; Generic is pinned above that.
+    const tag = @intFromEnum(std.meta.Tag(Message).Generic);
+    try testing.expectEqual(@as(u8, 255), tag);
+    try testing.expect(tag > 127);
+}
+
+test "GenericEvent is exactly one X11 message" {
+    try testing.expectEqual(@as(usize, 32), @sizeOf(GenericEvent));
+}
+
+// The cmsg layout is the one piece here the kernel will reject silently rather than loudly,
+// so pin the arithmetic against the values CMSG_* produce for a single fd on a 64-bit target.
+test "cmsg alignment rounds up to a pointer word" {
+    try testing.expectEqual(@as(usize, 0), cmsgAlign(0));
+    try testing.expectEqual(@as(usize, 8), cmsgAlign(1));
+    try testing.expectEqual(@as(usize, 8), cmsgAlign(8));
+    try testing.expectEqual(@as(usize, 16), cmsgAlign(9));
+    try testing.expectEqual(@as(usize, 16), cmsgAlign(16));
+}
+
+test "cmsg header layout matches the kernel's" {
+    // len(usize) + level(i32) + type(i32), and the payload starts right after it.
+    try testing.expectEqual(@as(usize, 16), @sizeOf(linux.cmsghdr));
+    try testing.expectEqual(@as(usize, 16), cmsgDataOffset());
+}
+
+test "cmsg len and space for a single fd" {
+    const fd_size = @sizeOf(std.posix.fd_t);
+    try testing.expectEqual(@as(usize, 4), fd_size);
+
+    // CMSG_LEN(4) = 16 + 4: what cmsghdr.len must report to the kernel.
+    try testing.expectEqual(@as(usize, 20), cmsgLen(fd_size));
+    // CMSG_SPACE(4) = 16 + 8: what the buffer must reserve, payload padded.
+    try testing.expectEqual(@as(usize, 24), cmsgSpace(fd_size));
+    // Space always leaves room for len; the difference is padding only.
+    try testing.expect(cmsgSpace(fd_size) >= cmsgLen(fd_size));
+}
+
+test "SCM_RIGHTS is the constant the kernel expects" {
+    try testing.expectEqual(@as(i32, 1), linux.SCM.RIGHTS);
+}
+
+// The arithmetic tests above only prove we agree with ourselves. This one makes the kernel judge
+// the layout: a malformed control message is silently dropped rather than rejected, so the fd
+// would just never arrive. Round-tripping a real fd over a socketpair is what actually proves
+// sendWithFd works before an X server is ever involved.
+test "sendWithFd delivers both the request and the descriptor" {
+    var pair: [2]i32 = undefined;
+    if (linux.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &pair) != 0) return error.SkipZigTest;
+    defer _ = linux.close(pair[0]);
+    defer _ = linux.close(pair[1]);
+
+    // Stand in for a real segment fd: a memfd holding known bytes.
+    const payload_fd = try std.posix.memfd_create("z11-shm-test", linux.MFD.CLOEXEC);
+    defer _ = linux.close(payload_fd);
+    try testing.expectEqual(std.posix.E.SUCCESS, std.posix.errno(linux.ftruncate(payload_fd, 4)));
+    try testing.expectEqual(std.posix.E.SUCCESS, std.posix.errno(linux.pwrite(payload_fd, "abcd", 4, 0)));
+
+    const request = proto.QueryExtension{ .length_of_name = 7 };
+    const conn = std.Io.net.Stream{ .socket = .{ .handle = pair[0], .address = undefined } };
+    try sendWithFd(conn, request, payload_fd);
+
+    // Read the request body back.
+    var body: [@sizeOf(proto.QueryExtension)]u8 = undefined;
+    var iov = [_]std.posix.iovec{.{ .base = &body, .len = body.len }};
+    var control: [cmsgSpace(@sizeOf(std.posix.fd_t))]u8 align(@alignOf(linux.cmsghdr)) = undefined;
+    var message = linux.msghdr{
+        .name = null,
+        .namelen = 0,
+        .iov = &iov,
+        .iovlen = 1,
+        .control = &control,
+        .controllen = control.len,
+        .flags = 0,
+    };
+    const received = linux.recvmsg(pair[1], &message, 0);
+    try testing.expectEqual(std.posix.E.SUCCESS, std.posix.errno(received));
+    try testing.expectEqual(@as(usize, body.len), received);
+    try testing.expectEqualSlices(u8, &std.mem.toBytes(request), &body);
+
+    // The kernel filled in a control message of exactly the shape we claimed.
+    const header: *const linux.cmsghdr = @ptrCast(&control);
+    try testing.expectEqual(@as(i32, std.posix.SOL.SOCKET), header.level);
+    try testing.expectEqual(@as(i32, linux.SCM.RIGHTS), header.type);
+    try testing.expectEqual(cmsgLen(@sizeOf(std.posix.fd_t)), header.len);
+
+    // The descriptor arrived as a distinct fd onto the same file: proof it really transferred,
+    // which is exactly what the X server relies on to map our segment.
+    const got_fd = std.mem.bytesToValue(std.posix.fd_t, control[cmsgDataOffset()..][0..@sizeOf(std.posix.fd_t)]);
+    defer _ = linux.close(got_fd);
+    try testing.expect(got_fd != payload_fd);
+
+    var round_tripped: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), linux.pread(got_fd, &round_tripped, 4, 0));
+    try testing.expectEqualSlices(u8, "abcd", &round_tripped);
+}
 
 const std = @import("std");
 const proto = @import("proto.zig");
 
+const linux = std.os.linux;
 const testing = std.testing;
 const endian = @import("builtin").cpu.arch.endian();
 

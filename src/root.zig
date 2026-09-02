@@ -21,6 +21,12 @@ pub const image = @import("x11/image.zig");
 /// Random utilities.
 pub const utils = @import("x11/utils.zig");
 
+/// Negotiating extensions (QueryExtension) to learn their runtime opcodes.
+pub const extension = @import("x11/extension.zig");
+
+/// MIT-SHM: push frames through shared memory instead of over the socket.
+pub const shm = @import("x11/ext/shm.zig");
+
 pub const ConnectionOptions = connection.ConnectionOptions;
 pub const connect = connection.connect;
 
@@ -35,9 +41,14 @@ pub const send = io.send;
 pub const write = io.write;
 pub const stream = io.stream;
 pub const sendWithBytes = io.sendWithBytes;
+pub const sendWithFd = io.sendWithFd;
 pub const receive = io.receive;
 pub const receiveBytes = io.receiveBytes;
 pub const Message = io.Message;
+pub const GenericEvent = io.GenericEvent;
+
+pub const Extension = extension.Extension;
+pub const queryExtension = extension.queryExtension;
 
 pub const ImageInfo = image.ImageInfo;
 pub const getImageInfo = image.getImageInfo;
@@ -61,4 +72,6 @@ test {
     _ = io;
     _ = image;
     _ = utils;
+    _ = extension;
+    _ = shm;
 }
