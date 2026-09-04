@@ -30,6 +30,9 @@ pub const shm = @import("x11/ext/shm.zig");
 /// XFixes: selection-owner change events.
 pub const xfixes = @import("x11/ext/xfixes.zig");
 
+/// XDND: the drag-and-drop atom names and ClientMessage payloads.
+pub const xdnd = @import("x11/xdnd.zig");
+
 pub const ConnectionOptions = connection.ConnectionOptions;
 pub const connect = connection.connect;
 
@@ -78,4 +81,5 @@ test {
     _ = extension;
     _ = shm;
     _ = xfixes;
+    _ = xdnd;
 }

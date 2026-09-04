@@ -687,6 +687,90 @@ pub const ChangeWindowAttributes = extern struct {
     value_mask: u32 = 0,
 };
 
+/// A drawable's position (relative to its parent, for a window), size and depth.
+pub const GetGeometry = extern struct {
+    opcode: u8 = 14,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    drawable: u32,
+};
+
+pub const GetGeometryReply = extern struct {
+    code: u8 = 1,
+    depth: u8,
+    sequence_number: u16,
+    reply_length: u32 = 0,
+    root: u32,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    border_width: u16,
+    pad: [10]u8 = .{0} ** 10,
+};
+
+/// Where the pointer is, relative to the root and to `window`, and which buttons and modifiers are down (`mask` is a KeyButMask).
+pub const QueryPointer = extern struct {
+    opcode: u8 = 38,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    window: u32,
+};
+
+pub const QueryPointerReply = extern struct {
+    code: u8 = 1,
+    same_screen: u8,
+    sequence_number: u16,
+    reply_length: u32 = 0,
+    root: u32,
+    /// The child of `window` the pointer is in, or 0.
+    child: u32,
+    root_x: i16,
+    root_y: i16,
+    win_x: i16,
+    win_y: i16,
+    mask: u16,
+    pad: [6]u8 = .{0} ** 6,
+};
+
+/// Convert a point from `src_window`'s coordinates to `dst_window`'s. With both the root, `child` in the reply is the toplevel under the point, which is how a drag source finds its target.
+pub const TranslateCoordinates = extern struct {
+    opcode: u8 = 40,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    src_window: u32,
+    dst_window: u32,
+    src_x: i16,
+    src_y: i16,
+};
+
+pub const TranslateCoordinatesReply = extern struct {
+    code: u8 = 1,
+    same_screen: u8,
+    sequence_number: u16,
+    reply_length: u32 = 0,
+    /// The mapped child of `dst_window` containing the point, or 0.
+    child: u32,
+    dst_x: i16,
+    dst_y: i16,
+    pad: [16]u8 = .{0} ** 16,
+};
+
+/// Move the pointer to (`dst_x`, `dst_y`) in `dst_window`, or by that offset with `dst_window` 0; a nonzero `src_window` limits the move to a pointer inside its rectangle.
+pub const WarpPointer = extern struct {
+    opcode: u8 = 41,
+    unused: u8 = 0,
+    length: u16 = @sizeOf(@This()) / 4,
+    src_window: u32 = 0,
+    dst_window: u32,
+    src_x: i16 = 0,
+    src_y: i16 = 0,
+    src_width: u16 = 0,
+    src_height: u16 = 0,
+    dst_x: i16,
+    dst_y: i16,
+};
+
 pub const GetWindowAttributes = extern struct {
     opcode: u8 = 3,
     unused: u8 = 0,
@@ -1204,6 +1288,24 @@ pub const GrabPointer = extern struct {
     timestamp: u32 = 0,
 };
 
+/// What GrabPointer answered; anything but `success` means the pointer is not ours.
+pub const GrabStatus = enum(u8) {
+    success = 0,
+    already_grabbed = 1,
+    invalid_time = 2,
+    not_viewable = 3,
+    frozen = 4,
+    _,
+};
+
+pub const GrabPointerReply = extern struct {
+    code: u8 = 1,
+    status: GrabStatus,
+    sequence_number: u16,
+    reply_length: u32 = 0,
+    pad: [24]u8 = .{0} ** 24,
+};
+
 /// UngrabPointer (opcode 27)
 pub const UngrabPointer = extern struct {
     opcode: u8 = 27,
@@ -1398,6 +1500,48 @@ test "GetModifierMapping is one unit and its reply sizes the keycodes that follo
     try testing.expectEqual(@as(usize, 32), @sizeOf(GetModifierMappingReply));
     const reply = GetModifierMappingReply{ .keycodes_per_modifier = 4, .sequence_number = 0, .reply_length = 8, .pad = @splat(0) };
     try testing.expectEqual(@as(usize, 32), reply.keycodeBytes());
+}
+
+test "the pointer and geometry requests carry the lengths the protocol fixes" {
+    try testing.expectEqual(@as(u16, 2), (GetGeometry{ .drawable = 0 }).length);
+    try testing.expectEqual(@as(u16, 2), (QueryPointer{ .window = 0 }).length);
+    try testing.expectEqual(@as(u16, 4), (TranslateCoordinates{ .src_window = 0, .dst_window = 0, .src_x = 0, .src_y = 0 }).length);
+    try testing.expectEqual(@as(u16, 6), (WarpPointer{ .dst_window = 0, .dst_x = 0, .dst_y = 0 }).length);
+    try testing.expectEqual(@as(usize, 32), @sizeOf(GetGeometryReply));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(QueryPointerReply));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(TranslateCoordinatesReply));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(GrabPointerReply));
+}
+
+test "the pointer replies decode from the wire layout" {
+    var bytes = [_]u8{0} ** 32;
+    bytes[0] = 1;
+    bytes[1] = 1; // same_screen
+    std.mem.writeInt(u32, bytes[8..12], 0x2A3, .little); // child
+    std.mem.writeInt(i16, bytes[12..14], -5, .little); // dst_x
+    std.mem.writeInt(i16, bytes[14..16], 700, .little); // dst_y
+    const translated = std.mem.bytesToValue(Reply, &bytes).as(TranslateCoordinatesReply);
+    try testing.expectEqual(@as(u32, 0x2A3), translated.child);
+    try testing.expectEqual(@as(i16, -5), translated.dst_x);
+    try testing.expectEqual(@as(i16, 700), translated.dst_y);
+
+    bytes = [_]u8{0} ** 32;
+    bytes[0] = 1;
+    std.mem.writeInt(u32, bytes[8..12], 0x1FF, .little); // root
+    std.mem.writeInt(u32, bytes[12..16], 0x2A3, .little); // child
+    std.mem.writeInt(i16, bytes[16..18], 100, .little); // root_x
+    std.mem.writeInt(i16, bytes[18..20], 200, .little); // root_y
+    std.mem.writeInt(u16, bytes[24..26], 0x100, .little); // mask: Button1
+    const pointer = std.mem.bytesToValue(Reply, &bytes).as(QueryPointerReply);
+    try testing.expectEqual(@as(u32, 0x2A3), pointer.child);
+    try testing.expectEqual(@as(i16, 100), pointer.root_x);
+    try testing.expectEqual(@as(i16, 200), pointer.root_y);
+    try testing.expectEqual(@intFromEnum(KeyButMask.Button1), pointer.mask);
+
+    bytes = [_]u8{0} ** 32;
+    bytes[0] = 1;
+    bytes[1] = 1; // already_grabbed
+    try testing.expectEqual(GrabStatus.already_grabbed, std.mem.bytesToValue(Reply, &bytes).as(GrabPointerReply).status);
 }
 
 test "Reply.as reinterprets the fixed bytes and extraLength scales by four" {
