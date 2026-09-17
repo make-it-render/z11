@@ -10,6 +10,11 @@ const endian = @import("builtin").cpu.arch.endian();
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// The server did not return a valid reply for an InternAtom request.
+    FailedToInternAtom,
+};
+
 /// Build a mask as expected from, example, CreateWindow.eventMask.
 pub fn mask(values: anytype) u32 {
     var value_mask: u32 = 0;
@@ -96,7 +101,7 @@ test "bytesFromValues" {
 
 /// Like io.sendWithBytes, but this build the bytes based on values.
 /// Example is CreateWindow WindowValue (to go with WindowMasks).
-pub fn sendWithValues(io_inst: std.Io, conn: std.Io.net.Stream, request: anytype, values: anytype) !void {
+pub fn sendWithValues(io_inst: std.Io, conn: std.Io.net.Stream, request: anytype, values: anytype) io.Error!void {
     var buffer = bufferFor(@TypeOf(values));
     const bytes = bytesFromValues(&buffer, values);
     try io.sendWithBytes(io_inst, conn, request, bytes);
@@ -105,7 +110,7 @@ pub fn sendWithValues(io_inst: std.Io, conn: std.Io.net.Stream, request: anytype
 /// Utility to get ID of an Atom.
 /// This is naive because it expects that the next message is always the reply.
 /// Works fine before you create a window.
-pub fn internAtom(io_inst: std.Io, conn: std.Io.net.Stream, name: []const u8) !u32 {
+pub fn internAtom(io_inst: std.Io, conn: std.Io.net.Stream, name: []const u8) (io.Error || Error)!u32 {
     const request = proto.InternAtom{ .length_of_name = @intCast(name.len) };
     try io.sendWithBytes(io_inst, conn, request, name);
 
@@ -152,7 +157,7 @@ pub const ClientMessageData = union(enum) {
 /// with no read-ahead buffer to strand bytes. Events that arrive ahead of the reply are
 /// dropped: a freshly started server sends MappingNotify to a new client, and taking it for
 /// the reply misaligns every read after it.
-pub fn receiveReply(io_inst: std.Io, conn: std.Io.net.Stream, ReplyType: type) !?ReplyType {
+pub fn receiveReply(io_inst: std.Io, conn: std.Io.net.Stream, ReplyType: type) (io.Error || std.Io.Reader.Error)!?ReplyType {
     var message_buffer: [32]u8 = undefined;
     while (true) {
         try io.receiveBytes(io_inst, conn, &message_buffer);

@@ -15,6 +15,11 @@ const endian = @import("builtin").cpu.arch.endian();
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// The server did not return a valid reply for a QueryExtension request.
+    QueryExtensionFailed,
+};
+
 /// The dynamic bases the server assigned to an extension on this connection.
 pub const Extension = struct {
     /// False when the server does not have the extension. The other fields are meaningless.
@@ -38,7 +43,7 @@ pub const Extension = struct {
 /// This is naive because it expects the next message to always be the reply, the same
 /// constraint as utils.internAtom: call it during init, before an event loop starts
 /// reading from the connection.
-pub fn queryExtension(io_inst: std.Io, conn: std.Io.net.Stream, name: []const u8) !Extension {
+pub fn queryExtension(io_inst: std.Io, conn: std.Io.net.Stream, name: []const u8) (io.Error || utils.Error || Error)!Extension {
     const request = proto.QueryExtension{ .length_of_name = @intCast(name.len) };
     try io.sendWithBytes(io_inst, conn, request, name);
 

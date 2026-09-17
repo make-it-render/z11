@@ -23,6 +23,19 @@ const linux = std.os.linux;
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// ftruncate failed with EBADF or EINVAL.
+    FileTooBig,
+    /// A generic I/O error from ftruncate.
+    InputOutput,
+    /// No space left on device.
+    NoSpaceLeft,
+    /// Permission denied during ftruncate.
+    PermissionDenied,
+    /// An unexpected POSIX errno was returned.
+    UnexpectedError,
+};
+
 /// The name to hand queryExtension.
 pub const extension_name = "MIT-SHM";
 
@@ -148,7 +161,7 @@ comptime {
 /// Negotiate MIT-SHM and confirm the server is new enough to accept file descriptors.
 /// Returns null when SHM is unavailable — callers must treat that as "use core PutImage",
 /// never as an error. Naive reply read: call during init, before an event loop starts.
-pub fn probe(io_inst: std.Io, conn: std.Io.net.Stream) !?extension.Extension {
+pub fn probe(io_inst: std.Io, conn: std.Io.net.Stream) (io.Error || utils.Error || extension.Error)!?extension.Extension {
     const ext = try extension.queryExtension(io_inst, conn, extension_name);
     if (!ext.present) {
         log.debug("MIT-SHM not present; falling back to core PutImage", .{});
@@ -177,7 +190,7 @@ pub fn probe(io_inst: std.Io, conn: std.Io.net.Stream) !?extension.Extension {
 }
 
 /// Size the buffer. Zig 0.16 dropped std.posix.ftruncate, so go to the syscall.
-fn ftruncate(fd: std.posix.fd_t, length: usize) !void {
+fn ftruncate(fd: std.posix.fd_t, length: usize) Error!void {
     switch (std.posix.errno(linux.ftruncate(fd, @intCast(length)))) {
         .SUCCESS => return,
         .INTR => return ftruncate(fd, length),
@@ -185,7 +198,7 @@ fn ftruncate(fd: std.posix.fd_t, length: usize) !void {
         .IO => return error.InputOutput,
         .NOSPC => return error.NoSpaceLeft,
         .PERM => return error.PermissionDenied,
-        else => |err| return std.posix.unexpectedErrno(err),
+        else => return error.UnexpectedError,
     }
 }
 
@@ -220,7 +233,7 @@ pub const Segment = struct {
         ext: extension.Extension,
         xids: *xid.XID,
         size: usize,
-    ) !Segment {
+    ) (io.Error || xid.Error || std.posix.MMapError || std.posix.MemFdCreateError || Error)!Segment {
         std.debug.assert(ext.present);
         _ = io_inst;
 

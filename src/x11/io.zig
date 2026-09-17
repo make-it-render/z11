@@ -1,9 +1,30 @@
 //! Functions to send Requests and receive Responses, Messages and Replies from an X11 socket.
 //! This will be part of your core loop.
 
+pub const Error = error{
+    /// A send/recv syscall was interrupted by a signal and would block.
+    WouldBlock,
+    /// The peer closed the connection.
+    ConnectionClosed,
+    /// The system is out of resources (memory, file descriptors).
+    SystemResources,
+    /// A write to the socket failed.
+    WriteFailed,
+    /// A read from the socket failed.
+    ReadFailed,
+    /// Parsing a message or reply failed (e.g. truncated struct).
+    ParseFailed,
+    /// The reader hit EOF before expected data.
+    EndOfStream,
+    /// An unexpected POSIX errno was returned from a syscall.
+    UnexpectedError,
+    /// `sendWithFd` wrote fewer bytes than the request size — desync risk.
+    SendWithFdTruncated,
+};
+
 /// Send a request to a socket.
 /// Use with any Request struct from proto namespace that does not need extra data.
-pub fn send(io: std.Io, conn: std.Io.net.Stream, request: anytype) !void {
+pub fn send(io: std.Io, conn: std.Io.net.Stream, request: anytype) Error!void {
     var buffer: [256]u8 = undefined;
     var net_writer = conn.writer(io, &buffer);
     const writer = &net_writer.interface;
@@ -14,7 +35,7 @@ pub fn send(io: std.Io, conn: std.Io.net.Stream, request: anytype) !void {
 /// Send a request to a socket with some extra bytes at the end.
 /// It re-calculate the apropriate length and add needed padding.
 /// Use with Request structs from proto namespace that require additional data to be sent.
-pub fn sendWithBytes(io: std.Io, conn: std.Io.net.Stream, request: anytype, extra_bytes: []const u8) !void {
+pub fn sendWithBytes(io: std.Io, conn: std.Io.net.Stream, request: anytype, extra_bytes: []const u8) Error!void {
     const req_bytes = request_bytes_fixed_len(request, extra_bytes.len);
     //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
 
@@ -44,7 +65,7 @@ pub fn sendWithBytes(io: std.Io, conn: std.Io.net.Stream, request: anytype, extr
 ///
 /// The write is a raw blocking syscall, not an `io` cancelation point. That is fine for the tiny,
 /// init-time requests this is meant for, and the reason it takes no `std.Io`.
-pub fn sendWithFd(conn: std.Io.net.Stream, request: anytype, fd: std.posix.fd_t) !void {
+pub fn sendWithFd(conn: std.Io.net.Stream, request: anytype, fd: std.posix.fd_t) Error!void {
     const req_bytes = std.mem.toBytes(request);
     var iov = [_]std.posix.iovec_const{.{ .base = &req_bytes, .len = req_bytes.len }};
 
@@ -80,7 +101,7 @@ pub fn sendWithFd(conn: std.Io.net.Stream, request: anytype, fd: std.posix.fd_t)
             .AGAIN => return error.WouldBlock,
             .PIPE, .CONNRESET => return error.ConnectionClosed,
             .NOMEM, .NOBUFS => return error.SystemResources,
-            else => |err| return std.posix.unexpectedErrno(err),
+            else => return error.UnexpectedError,
         }
     }
 }
@@ -108,7 +129,7 @@ fn cmsgSpace(payload_len: usize) usize {
 
 /// Write a request into a writer (no flush; the caller controls when to flush).
 /// Use with any Request struct from proto namespace that does not need extra data.
-pub fn write(writer: *std.Io.Writer, request: anytype) !void {
+pub fn write(writer: *std.Io.Writer, request: anytype) Error!void {
     const req_bytes: []const u8 = &std.mem.toBytes(request);
     //log.debug("Sending (size: {d}): {any}", .{ req_bytes.len, request });
     try writer.writeAll(req_bytes);
@@ -117,7 +138,7 @@ pub fn write(writer: *std.Io.Writer, request: anytype) !void {
 /// Write a request to a writer with some extra bytes at the end from a reader.
 /// It re-calculate the apropriate length and add needed padding.
 /// Use with Request structs from proto namespace that require additional data to be sent.
-pub fn stream(writer: *std.Io.Writer, request: anytype, reader: *std.Io.Reader, extra_len: usize) !void {
+pub fn stream(writer: *std.Io.Writer, request: anytype, reader: *std.Io.Reader, extra_len: usize) Error!void {
     const req_bytes = request_bytes_fixed_len(request, extra_len);
 
     // calculate padding and send it
@@ -199,7 +220,7 @@ test "padding length" {
 ///   and thread-per-source readers.
 /// - `.{ .duration = ... }` (or `.deadline`) returns `null` once it elapses with no
 ///   message pending, so callers can poll, e.g. to render a frame on a fixed cadence.
-pub fn receive(io: std.Io, conn: std.Io.net.Stream, timeout: std.Io.Timeout) !?Message {
+pub fn receive(io: std.Io, conn: std.Io.net.Stream, timeout: std.Io.Timeout) Error!?Message {
     var message_buffer: [32]u8 = undefined;
 
     switch (timeout) {
@@ -207,9 +228,8 @@ pub fn receive(io: std.Io, conn: std.Io.net.Stream, timeout: std.Io.Timeout) !?M
         .none => try receiveBytes(io, conn, &message_buffer),
         // Wait up to `timeout` for the first bytes; report "no message" if it elapses.
         else => {
-            const message = conn.socket.receiveTimeout(io, &message_buffer, timeout) catch |err| switch (err) {
-                error.Timeout => return null, // idle: no message within the timeout
-                else => return err,
+            const message = conn.socket.receiveTimeout(io, &message_buffer, timeout) catch {
+                return error.ReadFailed;
             };
             if (message.data.len == 0) return error.ConnectionClosed; // peer closed
             // The first read may be partial; block for the rest of the 32-byte message.
@@ -228,17 +248,19 @@ pub fn receive(io: std.Io, conn: std.Io.net.Stream, timeout: std.Io.Timeout) !?M
 /// only ever consumes what we ask for (the kernel keeps the rest), so there is no
 /// read-ahead buffer that could strand bytes between successive reads — replies and
 /// their trailing data stay perfectly aligned without sharing a stateful reader.
-pub fn receiveBytes(io: std.Io, conn: std.Io.net.Stream, buffer: []u8) !void {
+pub fn receiveBytes(io: std.Io, conn: std.Io.net.Stream, buffer: []u8) Error!void {
     var received: usize = 0;
     while (received < buffer.len) {
-        const message = try conn.socket.receive(io, buffer[received..]);
+        const message = conn.socket.receive(io, buffer[received..]) catch {
+            return error.ReadFailed;
+        };
         if (message.data.len == 0) return error.ConnectionClosed; // peer closed mid-read
         received += message.data.len;
     }
 }
 
 /// Decode a raw 32-byte X11 message into a Message union value.
-fn parseMessage(message_buffer: [32]u8) !?Message {
+fn parseMessage(message_buffer: [32]u8) Error!?Message {
     var message_reader: std.Io.Reader = .fixed(&message_buffer);
 
     // The most significant bit in this code is set if the event was generated from a SendEvent

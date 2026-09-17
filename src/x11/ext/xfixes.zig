@@ -18,6 +18,11 @@ const testing = std.testing;
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// The server did not return a valid reply for a QueryExtension request.
+    QueryExtensionFailed,
+};
+
 /// The name to hand queryExtension.
 pub const extension_name = "XFIXES";
 
@@ -117,7 +122,7 @@ comptime {
 /// Negotiate XFixes. Returns null when the server lacks it or predates version 1 (the one that
 /// introduced SelectSelectionInput) — callers treat that as "no owner-change events", never as
 /// an error. Naive reply read: call during init, before an event loop starts.
-pub fn probe(io_inst: std.Io, conn: std.Io.net.Stream) !?extension.Extension {
+pub fn probe(io_inst: std.Io, conn: std.Io.net.Stream) (io.Error || utils.Error || extension.Error || Error)!?extension.Extension {
     const ext = try extension.queryExtension(io_inst, conn, extension_name);
     if (!ext.present) {
         log.debug("XFixes not present; no selection-owner events", .{});
@@ -136,7 +141,7 @@ pub fn probe(io_inst: std.Io, conn: std.Io.net.Stream) !?extension.Extension {
 }
 
 /// Subscribe to owner changes of `selection`, reported on `window`; see SelectSelectionInput.
-pub fn selectSelectionInput(io_inst: std.Io, conn: std.Io.net.Stream, ext: extension.Extension, window: u32, selection: u32, event_mask: u32) !void {
+pub fn selectSelectionInput(io_inst: std.Io, conn: std.Io.net.Stream, ext: extension.Extension, window: u32, selection: u32, event_mask: u32) io.Error!void {
     std.debug.assert(ext.present);
     try io.send(io_inst, conn, SelectSelectionInput{
         .major_opcode = ext.major_opcode,

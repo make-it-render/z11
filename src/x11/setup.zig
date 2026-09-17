@@ -10,9 +10,20 @@ const log = std.log.scoped(.x11);
 
 const endian = @import("builtin").cpu.arch.endian();
 
+pub const Error = error{
+    /// The setup reply status indicates a failure.
+    SetupFailed,
+    /// The server rejected authentication.
+    AuthenticationFailed,
+    /// The setup reply status was a value we don't recognize.
+    InvalidSetupStatus,
+    /// Setup data (vendor string, screens, etc.) exceeded expected limits.
+    SetupDataTooLarge,
+};
+
 /// First function to call on a new connection.
 /// It will return important information for most of following requests.
-pub fn setup(io: std.Io, environ: std.process.Environ, allocator: std.mem.Allocator, connection: std.Io.net.Stream) !Setup {
+pub fn setup(io: std.Io, environ: std.process.Environ, allocator: std.mem.Allocator, connection: std.Io.net.Stream) (xauth.Error || std.mem.Allocator.Error || std.Io.Writer.Error || std.Io.Reader.Error || Error)!Setup {
     const auth = try xauth.get_auth(io, environ, allocator);
     defer auth.deinit();
 
@@ -31,7 +42,7 @@ pub fn setup(io: std.Io, environ: std.process.Environ, allocator: std.mem.Alloca
     return xdata;
 }
 
-fn sendSetupRequest(writer: *std.Io.Writer, auth_name: []const u8, auth_data: []const u8) !void {
+fn sendSetupRequest(writer: *std.Io.Writer, auth_name: []const u8, auth_data: []const u8) std.Io.Writer.Error!void {
     const request_base = proto.SetupRequest{
         .auth_name_len = @intCast(auth_name.len),
         .auth_data_len = @intCast(auth_data.len),
@@ -48,7 +59,7 @@ fn sendSetupRequest(writer: *std.Io.Writer, auth_name: []const u8, auth_data: []
     try writer.flush();
 }
 
-fn readSetupReply(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Setup {
+fn readSetupReply(allocator: std.mem.Allocator, reader: *std.Io.Reader) (std.mem.Allocator.Error || std.Io.Reader.Error || Error)!Setup {
     const status_reply = try reader.takeStruct(proto.SetupStatus, endian);
 
     const reply_size = @as(usize, status_reply.reply_len) * 4;

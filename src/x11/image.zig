@@ -58,11 +58,20 @@ pub fn getImageInfo(info: xsetup.Setup, root: u32) ImageInfo {
     };
 }
 
+pub const Error = error{
+    /// The visual class is not supported (only TrueColor is supported).
+    UnsupportedVisualTypeClass,
+    /// The bits-per-pixel is not 32.
+    UnsupportedBitsPerPixel,
+    /// The scanline-pad does not match bits-per-pixel.
+    UnsupportedScanlinePad,
+};
+
 /// Convert an RGBa byte array to a ZPixmap byte array.
 /// RGBa format is expected to be in quads of u8.
 /// Alpha is ignored.
 /// Return a new slice owned by caller.
-pub fn rgbaToZPixmapAlloc(allocator: std.mem.Allocator, info: ImageInfo, rgba: []const u8) ![]const u8 {
+pub fn rgbaToZPixmapAlloc(allocator: std.mem.Allocator, info: ImageInfo, rgba: []const u8) (std.mem.Allocator.Error || Error)![]const u8 {
     const pixels = try allocator.dupe(u8, rgba);
     try rgbaToZPixmapInPlace(info, pixels);
     return pixels;
@@ -72,7 +81,7 @@ pub fn rgbaToZPixmapAlloc(allocator: std.mem.Allocator, info: ImageInfo, rgba: [
 /// RGBa format is expected to be in quads of u8.
 /// Alpha is ignored.
 /// Replaces values in the provided slice.
-pub fn rgbaToZPixmapInPlace(info: ImageInfo, pixels: []u8) !void {
+pub fn rgbaToZPixmapInPlace(info: ImageInfo, pixels: []u8) Error!void {
     // Only support a very specific visual type and format for now
     if (info.visual_type.class != .TrueColor) {
         return error.UnsupportedVisualTypeClass;

@@ -5,6 +5,11 @@ const std = @import("std");
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// All X11 IDs in the current range are exhausted.
+    NoMoreIDs,
+};
+
 /// Struct to control ID generation.
 /// IDs are somewhat sequencial and finite,
 /// so we need to keep track of it.
@@ -28,7 +33,7 @@ pub const XID = struct {
     }
 
     /// Generate next ID.
-    pub fn genID(self: *@This()) !u32 {
+    pub fn genID(self: *@This()) Error!u32 {
         if (self.last == self.max) {
             // TODO: request new range of IDs
             return error.NoMoreIDs;

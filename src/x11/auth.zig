@@ -5,17 +5,28 @@ const std = @import("std");
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// Neither XAUTHORITY nor HOME/.Xauthority was found.
+    NoAuthorityFileFound,
+    /// No MIT-MAGIC-COOKIE-1 entry was found in the authority file.
+    NoSupportedAuthFound,
+    /// The authority file has an invalid format (entry too large).
+    InvalidAuthFile,
+    /// Failed to open or read the authority file.
+    ReadFailed,
+};
+
 /// Looks for the Xauthority file and open it.
 /// Calee should close it after use.
-fn open_xauth_file(io: std.Io, environ: std.process.Environ) !std.Io.File {
+fn open_xauth_file(io: std.Io, environ: std.process.Environ) Error!std.Io.File {
     if (environ.getPosix("XAUTHORITY")) |file| {
         log.debug("Xauthority file: {s}", .{file});
-        return std.Io.Dir.openFileAbsolute(io, file, .{});
+        return std.Io.Dir.openFileAbsolute(io, file, .{}) catch return error.ReadFailed;
     } else if (environ.getPosix("HOME")) |home| {
-        var dir = try std.Io.Dir.openDirAbsolute(io, home, .{});
+        var dir = std.Io.Dir.openDirAbsolute(io, home, .{}) catch return error.ReadFailed;
         defer dir.close(io);
         log.debug("Xauthority file: {s}/.Xauthority", .{home});
-        return dir.openFile(io, ".Xauthority", .{});
+        return dir.openFile(io, ".Xauthority", .{}) catch return error.ReadFailed;
     } else {
         return error.NoAuthorityFileFound;
     }
@@ -24,7 +35,7 @@ fn open_xauth_file(io: std.Io, environ: std.process.Environ) !std.Io.File {
 /// Reads the authority file.
 /// Only supports MIT-MAGIC-COOKIE method.
 /// Ignore address and port, only support local method.
-fn read_xauth_file(io: std.Io, allocator: std.mem.Allocator, xauth_file: std.Io.File) !XAuth {
+fn read_xauth_file(io: std.Io, allocator: std.mem.Allocator, xauth_file: std.Io.File) Error!XAuth {
     var buffer: [1024]u8 = undefined;
 
     var xauth_file_reader = xauth_file.reader(io, &buffer);
@@ -42,7 +53,7 @@ fn read_xauth_file(io: std.Io, allocator: std.mem.Allocator, xauth_file: std.Io.
 
         const xauth_name_len = xauth_reader.takeInt(u16, .big) catch return error.NoSupportedAuthFound;
         if (xauth_name_len > 256) return error.InvalidAuthFile;
-        const xauth_name = try allocator.alloc(u8, xauth_name_len);
+        const xauth_name = allocator.alloc(u8, xauth_name_len) catch return error.NoSupportedAuthFound;
         xauth_reader.readSliceAll(xauth_name) catch {
             allocator.free(xauth_name);
             return error.NoSupportedAuthFound;
@@ -56,7 +67,10 @@ fn read_xauth_file(io: std.Io, allocator: std.mem.Allocator, xauth_file: std.Io.
             allocator.free(xauth_name);
             return error.InvalidAuthFile;
         }
-        const xauth_data = try allocator.alloc(u8, xauth_data_len);
+        const xauth_data = allocator.alloc(u8, xauth_data_len) catch {
+            allocator.free(xauth_name);
+            return error.NoSupportedAuthFound;
+        };
         xauth_reader.readSliceAll(xauth_data) catch {
             allocator.free(xauth_name);
             allocator.free(xauth_data);
@@ -92,7 +106,7 @@ pub const XAuth = struct {
 /// Return authentication information.
 /// It will look at XAUTHORITY env var for location of Xauthority file, next it will look for it at HOME.
 /// It returns an XAuth struct that needs to be deinit'd after use.
-pub fn get_auth(io: std.Io, environ: std.process.Environ, allocator: std.mem.Allocator) !XAuth {
+pub fn get_auth(io: std.Io, environ: std.process.Environ, allocator: std.mem.Allocator) Error!XAuth {
     const xauth_file = try open_xauth_file(io, environ);
     defer xauth_file.close(io);
     const xauth = try read_xauth_file(io, allocator, xauth_file);

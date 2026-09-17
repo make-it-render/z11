@@ -4,12 +4,19 @@ const std = @import("std");
 
 const log = std.log.scoped(.x11);
 
+pub const Error = error{
+    /// The DISPLAY environment variable has an invalid format (:digit expected).
+    InvalidDisplay,
+    /// The provided buffer is too small to hold the socket path.
+    SocketPathBufferTooSmall,
+};
+
 /// Options for the X11 connection.
 pub const ConnectionOptions = struct {};
 
 /// Connects to local X11 server.
 /// It will look for DISPLAY env variable, or default to :0.
-pub fn connect(io: std.Io, environ: std.process.Environ, options: ConnectionOptions) !std.Io.net.Stream {
+pub fn connect(io: std.Io, environ: std.process.Environ, options: ConnectionOptions) (Error || std.Io.net.UnixAddress.InitError || std.Io.net.UnixAddress.ConnectError)!std.Io.net.Stream {
     _ = options;
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const socket_path = try get_socket_path(environ, &buffer);
@@ -28,7 +35,7 @@ pub fn connect(io: std.Io, environ: std.process.Environ, options: ConnectionOpti
 /// Return the file path for the socket to active display.
 /// Look at DISPLAY env var for display, else default to :0
 /// Uses provided buffer and return only the needed part.
-fn get_socket_path(environ: std.process.Environ, buffer: []u8) ![]const u8 {
+fn get_socket_path(environ: std.process.Environ, buffer: []u8) Error![]const u8 {
     const display: []const u8 = environ.getPosix("DISPLAY") orelse ":0";
     log.debug("Display: {s}", .{display});
 

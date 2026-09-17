@@ -33,16 +33,23 @@ pub const xfixes = @import("x11/ext/xfixes.zig");
 /// XDND: the drag-and-drop atom names and ClientMessage payloads.
 pub const xdnd = @import("x11/xdnd.zig");
 
+// --- Connection ---
 pub const ConnectionOptions = connection.ConnectionOptions;
 pub const connect = connection.connect;
+pub const ConnectionError = connection.Error;
 
+// --- Setup ---
 pub const setup = setup0.setup;
 pub const Setup = setup0.Setup;
 pub const Screen = setup0.Screen;
 pub const Depth = setup0.Depth;
+pub const SetupError = setup0.Error;
 
+// --- XID ---
 pub const XID = xid.XID;
+pub const XIDError = xid.Error;
 
+// --- I/O ---
 pub const send = io.send;
 pub const write = io.write;
 pub const stream = io.stream;
@@ -52,16 +59,22 @@ pub const receive = io.receive;
 pub const receiveBytes = io.receiveBytes;
 pub const Message = io.Message;
 pub const GenericEvent = io.GenericEvent;
+pub const IoError = io.Error;
 
+// --- Extension ---
 pub const Extension = extension.Extension;
 pub const queryExtension = extension.queryExtension;
+pub const ExtensionError = extension.Error;
 
+// --- Image ---
 pub const ImageInfo = image.ImageInfo;
 pub const getImageInfo = image.getImageInfo;
 pub const rgbaToZPixmapInPlace = image.rgbaToZPixmapInPlace;
 pub const rgbaToZPixmapAlloc = image.rgbaToZPixmapAlloc;
 pub const RgbaToZPixmapReader = image.RgbaToZPixmapReader;
+pub const ImageError = image.Error;
 
+// --- Utils ---
 pub const mask = utils.mask;
 pub const maskFromValues = utils.maskFromValues;
 pub const sendWithValues = utils.sendWithValues;
@@ -69,6 +82,11 @@ pub const internAtom = utils.internAtom;
 pub const clientMessageData = utils.clientMessageData;
 pub const ClientMessageData = utils.ClientMessageData;
 pub const receiveReply = utils.receiveReply;
+pub const UtilsError = utils.Error;
+
+// --- SHM / XFixes ---
+pub const shmError = shm.Error;
+pub const xfixesError = xfixes.Error;
 
 test {
     _ = connection;
